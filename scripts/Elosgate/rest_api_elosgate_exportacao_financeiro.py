@@ -34,7 +34,7 @@ PG_PORT = dw.get("auth", "port", fallback=None)
 PG_DB = dw.get("auth", "db", fallback=None)
 PG_USER = dw.get("auth", "user", fallback=None)
 PG_PASS = dw.get("auth", "pwd", fallback=None)
-SCHEMA  = dw.get("auth", "schema", fallback=None)
+SCHEMA = dw.get("auth", "schema", fallback=None)
 
 def write_log(message: str):
     LOG_PATH.mkdir(parents=True, exist_ok=True)
@@ -100,8 +100,14 @@ def solicitar_exportacao_financeiro(
         raise RuntimeError(f"Solicitar exportação falhou | status={r.status_code} | body={r.text}")
     return r.json()
 
-def obter_qtd_exportacao(access_token: str, id_exportacao: str, base_url: str = BASE_URL,
-                        timeout: int = 30, tentativas: int = 25, espera_seg: int = 3):
+def obter_qtd_exportacao(
+        access_token: str, 
+        id_exportacao: str, 
+        base_url: str = BASE_URL,
+        timeout: int = 30, 
+        tentativas: int = 25, 
+        espera_seg: int = 3
+        ):
 
     url = base_url.rstrip("/") + "/api/v1/consultas/consultar-exportacao-financeiro"
     headers = {
@@ -155,8 +161,14 @@ def obter_qtd_exportacao(access_token: str, id_exportacao: str, base_url: str = 
 
     return None, ultima_mensagem
 
-def baixar_exportacao_por_qtd(access_token: str, id_exportacao: str, qtd: int, data_ref: str,
-                             base_url: str = BASE_URL, timeout: int = 30):
+def baixar_exportacao_por_qtd(
+        access_token: str
+        , id_exportacao: str
+        , qtd: int
+        , data_ref: str
+        , base_url: str = BASE_URL
+        , timeout: int = 30
+        ):
 
     url = base_url.rstrip("/") + "/api/v1/consultas/consultar-exportacao-financeiro"
     headers = {
@@ -189,9 +201,14 @@ def baixar_exportacao_por_qtd(access_token: str, id_exportacao: str, qtd: int, d
     df.insert(0, "data_ref", data_ref)
     return df
 
-def exportacao_financeiro_periodo(access_token: str, data_inicio: str, data_fim: str,
-                                 base_url: str = BASE_URL, timeout: int = 30,
-                                 take_sleep_dia: float = 0.8):
+def exportacao_financeiro_periodo(
+        access_token: str
+        , data_inicio: str
+        , data_fim: str
+        , base_url: str = BASE_URL
+        , timeout: int = 30
+        , take_sleep_dia: float = 0.8
+        ):
 
     ini = datetime.strptime(data_inicio, "%Y-%m-%d").date()
     fim = datetime.strptime(data_fim, "%Y-%m-%d").date()
@@ -335,7 +352,7 @@ for section in filiais.sections():
                 table="elosgate_exportacao_financeiro"
             )
 
-        write_log(f"SUCESSO | marca={MARK} | data_inicio={DATA_INICIO} data_fim={DATA_FIM} | linhas={df_fin.shape[0]} colunas={df_fin.shape[1]} | tabela={SCHEMA}.elosgate_exportacao_financeiro")
+        write_log(f"SUCESSO | marca={MARK} | data_inicio={DATA_INICIO} data_fim={DATA_FIM} | linhas={df_fin.shape[0]} colunas={df_fin.shape[1]}")
 
         if not df_erros.empty:
             write_log(f"ATENCAO | marca={MARK} | falhas_dias={df_erros.shape[0]} | exemplo_erro={df_erros.iloc[0].to_dict()}")

@@ -11,8 +11,8 @@ pd.set_option('display.max_columns', None)
 DATA_INICIO = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 DATA_FIM = date.today().strftime("%Y-%m-%d") 
 
-# DATA_INICIO = "2026-01-01"
-# DATA_FIM = "2025-12-31"
+# DATA_INICIO = "2022-05-01"
+# DATA_FIM = "2022-05-09"
 
 LOG_PATH = Path(r"E:\BI\logs")
 LOG_FILE = LOG_PATH / "log_elosgate_recebimentos_pix.txt"
@@ -30,7 +30,7 @@ PG_PORT = dw.get("auth", "port", fallback=None)
 PG_DB = dw.get("auth", "db", fallback=None)
 PG_USER = dw.get("auth", "user", fallback=None)
 PG_PASS = dw.get("auth", "pwd", fallback=None)
-SCHEMA  = dw.get("auth", "schema", fallback=None)
+SCHEMA = dw.get("auth", "schema", fallback=None)
 
 def write_log(message: str) -> None:
     LOG_PATH.mkdir(parents=True, exist_ok=True)
@@ -131,7 +131,6 @@ def recebimentos_pix_periodo(
         d += timedelta(days=1)
 
     if erros:
-        # log resumido (não explode o arquivo)
         write_log(f"ALERTA | marca={mark} | falhas_em_datas={len(erros)} | exemplo={erros[0]['data_ref']}")
 
     return pd.concat(dfs, ignore_index=True) if dfs else pd.DataFrame()
@@ -183,7 +182,7 @@ engine = create_engine(
 )
 
 for section in filiais.sections():
-    MARK   = filiais.get(section, "mark", fallback=section)
+    MARK = filiais.get(section, "mark", fallback=section)
     CLIENT = filiais.get(section, "client", fallback=None)
     SECRET = filiais.get(section, "secret", fallback=None)
 
@@ -210,7 +209,7 @@ for section in filiais.sections():
             table="elosgate_recebimentos_pix"
         )
 
-        write_log(f"SUCESSO | marca={MARK} | linhas={linhas} | periodo={DATA_INICIO} -> {DATA_FIM} | tabela={SCHEMA}.elosgate_recebimentos_pix")
+        write_log(f"SUCESSO | marca={MARK} | linhas={linhas} | periodo={DATA_INICIO} -> {DATA_FIM}")
 
     except Exception as e:
         write_log(f"ERRO | marca={MARK} | {type(e).__name__}: {e}")
