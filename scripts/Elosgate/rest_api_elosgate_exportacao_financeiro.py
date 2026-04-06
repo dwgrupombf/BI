@@ -13,8 +13,8 @@ pd.set_option('display.max_columns', None)
 DATA_INICIO = (date.today() - timedelta(days=1)).strftime("%Y-%m-%d")
 DATA_FIM = date.today().strftime("%Y-%m-%d") 
 
-# DATA_INICIO = "2026-01-01"
-# DATA_FIM = "2025-12-31" 
+# DATA_INICIO = "2026-03-04"
+# DATA_FIM = "2026-03-05" 
 
 LOG_PATH = Path(r"E:\BI\logs")
 LOG_FILE = LOG_PATH / "log_elosgate_exportacao_financeiro.txt"

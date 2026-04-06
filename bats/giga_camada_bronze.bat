@@ -1,15 +1,11 @@
 @echo off
-setlocal
-
-set "KNIME_EXE=C:\Users\Wiser\AppData\Local\Programs\KNIME\knime.exe"
-set "WF_DIR=E:\BI\knime\camada_bronze_GIGA"
+set "KNIME_EXE="E:\KNIME\knime.exe""
+set "WF_DIR=E:\BI\knime\camada_bronze_giga"
 
 "%KNIME_EXE%" ^
-  -nosplash ^
+  -nosave ^
   -consoleLog ^
+  -nosplash ^
+  -reset ^
   -application org.knime.product.KNIME_BATCH_APPLICATION ^
-  -workflowDir="%WF_DIR%" ^
-  -reset
-
-echo ExitCode=%ERRORLEVEL%
-exit /b %ERRORLEVEL%
+  -workflowDir="%WF_DIR%"
