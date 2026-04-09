@@ -216,13 +216,13 @@ def delete_insert_por_nome_arquivo(engine, schema: str, tabela: str, df: pd.Data
         print(f"Sem nome_arquivo para deletar/inserir em {schema}.{tabela}")
         return 0
 
-    # delete_sql = text(f'''
-    #     DELETE FROM "{schema}"."{tabela}"
-    #     WHERE nome_arquivo = ANY(:nomes)
-    # ''')
+    delete_sql = text(f'''
+        DELETE FROM "{schema}"."{tabela}"
+        WHERE nome_arquivo = ANY(:nomes)
+    ''')
 
-    # with engine.begin() as conn:
-    #     conn.execute(delete_sql, {"nomes": nomes})
+    with engine.begin() as conn:
+        conn.execute(delete_sql, {"nomes": nomes})
 
     df.to_sql(
         name=tabela,
