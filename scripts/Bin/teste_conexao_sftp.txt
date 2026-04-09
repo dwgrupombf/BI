@@ -1,0 +1,5 @@
+open sftp://LAGW-ED00227:t8O4q)p$O@prod-gw-lac.firstdataclients.com:6522/ -privatekey="E:\BI\config\bin_key_putty.ppk" -hostkey="*"
+                    cd /available
+                    ls 
+                    exit
+                    
