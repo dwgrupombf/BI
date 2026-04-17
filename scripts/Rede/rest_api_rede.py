@@ -14,43 +14,33 @@ from pathlib import Path
 import calendar
 from sqlalchemy import create_engine, text, inspect
 
-# =========================
-# INPUT (dinâmico)
-# =========================
-# formato: "dd-mm-aaaa"
-DATA_INICIAL = "01-01-2026"
-DATA_FINAL   = "01-12-2026"
+HOJE = datetime.today().strftime("%d-%m-%Y")
+DATA_INICIAL = HOJE
+DATA_FINAL   = HOJE
 
-# =========================
-# CONFIG API REDE
-# =========================
+# DATA_INICIAL = "01-05-2022"
+# DATA_FINAL   = "01-05-2022"
+
 BASE_URL = "https://api.userede.com.br/redelabs"
 
-# MANTENHA AQUI OS MESMOS VALORES QUE VOCÊ JÁ USA HOJE
 CLIENT_ID = "b7d9801d-098b-4ecd-b054-03500c9c50fa"
 CLIENT_SECRET = "23i4HnQDaR"
 
-# =========================
-# CONFIG DW (Postgres)
-# =========================
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 dw = configparser.ConfigParser()
 dw.read(DW_CONFIG_PATH, encoding="utf-8")
 
 PG_HOST = dw.get("auth", "host", fallback=None)
 PG_PORT = dw.get("auth", "port", fallback=None)
-PG_DB   = dw.get("auth", "db", fallback=None)
+PG_DB = dw.get("auth", "db", fallback=None)
 PG_USER = dw.get("auth", "user", fallback=None)
 PG_PASS = dw.get("auth", "pwd", fallback=None)
-SCHEMA  = dw.get("auth", "schema", fallback="datalake")
+SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
-TBL_VENDAS     = "rede_vendas"
-TBL_RECEBIDOS  = "rede_recebidos"
+TBL_VENDAS = "rede_vendas"
+TBL_RECEBIDOS = "rede_recebidos"
 TBL_RECEBIVEIS = "rede_recebiveis"
 
-# =========================
-# TOKEN
-# =========================
 def gerar_token(username: str, password: str) -> str:
     url = f"{BASE_URL}/oauth/token"
 
@@ -94,9 +84,6 @@ def month_periods(data_ini_ddmmyyyy: str, data_fim_ddmmyyyy: str):
 
     return out
 
-# =========================
-# REQUEST BASE
-# =========================
 def fazer_get(url: str, params: dict, auth_state: dict, extra_headers: dict | None = None):
     headers = {"Accept": "application/json", **(extra_headers or {})}
     headers["Authorization"] = f"Bearer {auth_state['token']}"
@@ -127,7 +114,7 @@ def normalizar_lista(
     origem: str,
     ano_mes: str,
     conta: ContaEstabelecimento
-) -> pd.DataFrame:
+):
     if not lista:
         return pd.DataFrame()
 
@@ -280,9 +267,6 @@ def consultar_recebiveis_mes(
 
     return [data], None
 
-# =========================
-# DW: APOIO
-# =========================
 def tabela_existe(engine, schema: str, table: str) -> bool:
     insp = inspect(engine)
     return insp.has_table(table, schema=schema)

@@ -1,6 +1,6 @@
 @echo off
 set "KNIME_EXE="E:\KNIME\knime.exe""
-set "WF_DIR=E:\BI\knime\camada_bronze_giga"
+set "WF_DIR=E:\BI\knime\giga"
 
 "%KNIME_EXE%" ^
   -nosave ^
