@@ -49,7 +49,6 @@ def identificar_tipo_edi(nome_arquivo: str) -> str | None:
     m = re.match(r"^EDI-([A-Z]+)-", nome_arquivo.upper())
     return m.group(1) if m else None
 
-
 def extrair_metadados_nome(nome_arquivo: str) -> dict:
     partes = nome_arquivo.replace(".json", "").split("-")
 
@@ -59,8 +58,8 @@ def extrair_metadados_nome(nome_arquivo: str) -> dict:
         "lote": None,
         "adquirente": None,
         "cnpj": None,
-        "nsu": None,
-        "data_arquivo": None,
+        "estabelecimento": None,
+        "data": None,
     }
 
     if len(partes) >= 7 and partes[0] == "EDI":
@@ -68,8 +67,14 @@ def extrair_metadados_nome(nome_arquivo: str) -> dict:
         meta["lote"] = partes[2]
         meta["adquirente"] = partes[3]
         meta["cnpj"] = partes[4]
-        meta["nsu"] = partes[5]
-        meta["data_arquivo"] = partes[6]
+        meta["estabelecimento"] = partes[5]
+
+        data_raw = partes[6]
+
+        try:
+            meta["data"] = pd.to_datetime(data_raw[:8], format="%Y%m%d").date()
+        except Exception:
+            meta["data"] = None
 
     return meta
 
@@ -218,12 +223,15 @@ def delete_insert_por_nome_arquivo(engine, schema: str, tabela: str, df: pd.Data
 
 
 try:
-    # dt_str = datetime.now().strftime("%Y%m%d")
-    # dt_str = "20260408"
-    # pattern_remoto = f"EDI-*-*-{dt_str}*.json"
-    
+    dt_str = datetime.now().strftime("%Y%m%d")
+    ''' 
+    Baixa todos os arquivos inseridos recentemente na pasta remota available.
+    Por padrão, após a leitura, sçao redirecionados para a pasta remota downloaded.
+    '''
     pattern_remoto = "EDI-*.json"
-    pattern_local = pattern_remoto
+
+    ''' Ler apenas os arquivos de hoje na pasta local Json '''
+    pattern_local = f"EDI-*-*-{dt_str}*.json"
 
     baixar_arquivos_localmente(pattern_remoto=pattern_remoto)
 
@@ -265,4 +273,3 @@ except Exception as e:
     raise
 
 
-# %%

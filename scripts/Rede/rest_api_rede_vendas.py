@@ -16,20 +16,27 @@ from sqlalchemy import create_engine, text, inspect
 
 HOJE = datetime.today().strftime("%d-%m-%Y")
 DATA_INICIAL = HOJE
-DATA_FINAL   = HOJE
+DATA_FINAL = HOJE
 
-# DATA_INICIAL = "01-05-2022"
-# DATA_FINAL   = "01-05-2022"
+# DATA_INICIAL = "01-01-2026"
+# DATA_FINAL = "01-12-2026"
 
 BASE_URL = "https://api.userede.com.br/redelabs"
 
-CLIENT_ID = "b7d9801d-098b-4ecd-b054-03500c9c50fa"
-CLIENT_SECRET = "23i4HnQDaR"
+''' CONFUGURAÇÕES DA API '''
+
+CREDENTIAL_PATH = Path(r"E:\BI\config\config_rede.ini")
+s = configparser.ConfigParser()
+s.read(CREDENTIAL_PATH, encoding="utf-8")
+CLIENT_ID = s.get("auth", "client", fallback=None)
+CLIENT_SECRET = s.get("auth", "secret", fallback=None)
+
+
+''' CONFUGURAÇÕES DO DATALAKE '''
 
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 dw = configparser.ConfigParser()
 dw.read(DW_CONFIG_PATH, encoding="utf-8")
-
 PG_HOST = dw.get("auth", "host", fallback=None)
 PG_PORT = dw.get("auth", "port", fallback=None)
 PG_DB = dw.get("auth", "db", fallback=None)
@@ -38,8 +45,7 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 TBL_VENDAS = "rede_vendas"
-TBL_RECEBIDOS = "rede_recebidos"
-TBL_RECEBIVEIS = "rede_recebiveis"
+TBL_VENDAS_TRACKING = "rede_vendas_tracking"
 
 def gerar_token(username: str, password: str) -> str:
     url = f"{BASE_URL}/oauth/token"
@@ -109,6 +115,7 @@ def fazer_get(url: str, params: dict, auth_state: dict, extra_headers: dict | No
 # =========================
 # NORMALIZAÇÃO
 # =========================
+
 def normalizar_lista(
     lista: list,
     origem: str,
@@ -171,7 +178,7 @@ def consultar_vendas_mes(
         "subsidiaries": conta.subsidiary,
         "startDate": start_date,
         "endDate": end_date,
-        "size": 50
+        "size": 100
     }
 
     resp = fazer_get(
@@ -191,83 +198,53 @@ def consultar_vendas_mes(
     transactions = data.get("content", {}).get("transactions", [])
     return transactions, None
 
-def consultar_recebidos_mes(
-    auth_state: dict,
-    start_date: str,
-    end_date: str,
-    conta: ContaEstabelecimento
-):
-    url = f"{BASE_URL}/merchant-statement/v1/payments"
-    params = {
-        "parentCompanyNumber": conta.pv,
-        "subsidiaries": conta.subsidiary,
-        "startDate": start_date,
-        "endDate": end_date,
-        "size": 50
-    }
+def normalizar_tracking_vendas(df_vendas: pd.DataFrame) -> pd.DataFrame:
+    if df_vendas is None or df_vendas.empty or "tracking" not in df_vendas.columns:
+        return pd.DataFrame()
 
-    resp = fazer_get(
-        url=url,
-        params=params,
-        auth_state=auth_state
-    )
+    registros = []
 
-    if resp.status_code != 200:
-        return [], {
-            "tipo": "payments",
-            "status_http": resp.status_code,
-            "resposta": resp.text
-        }
+    for _, row in df_vendas.iterrows():
+        tracking = row.get("tracking")
 
-    data = resp.json()
-    payments = data.get("content", {}).get("payments", [])
-    return payments, None
+        if tracking is None:
+            continue
 
-def consultar_recebiveis_mes(
-    auth_state: dict,
-    start_date: str,
-    end_date: str,
-    conta: ContaEstabelecimento
-):
-    url = f"{BASE_URL}/merchant-statement/v1/receivables/daily"
-    params = {
-        "startDate": start_date,
-        "endDate": end_date,
-        "size": 50
-    }
+        if isinstance(tracking, str):
+            tracking = tracking.strip()
+            if not tracking:
+                continue
+            try:
+                tracking = json.loads(tracking)
+            except Exception:
+                continue
 
-    resp = fazer_get(
-        url=url,
-        params=params,
-        auth_state=auth_state,
-        extra_headers={
-            "merchant-id": str(conta.pv),
-            "Content-Type": "application/json"
-        }
-    )
+        if isinstance(tracking, dict):
+            tracking = [tracking]
 
-    if resp.status_code != 200:
-        return [], {
-            "tipo": "receivables",
-            "status_http": resp.status_code,
-            "resposta": resp.text
-        }
+        if not isinstance(tracking, list):
+            continue
 
-    data = resp.json()
+        for idx, item in enumerate(tracking, start=1):
+            if not isinstance(item, dict):
+                continue
 
-    if "content" in data and isinstance(data["content"], dict):
-        for _, valor in data["content"].items():
-            if isinstance(valor, list):
-                return valor, None
-        return [data["content"]], None
+            registros.append({
+                "origem": row.get("origem"),
+                "ano_mes": row.get("ano_mes"),
+                "pv": row.get("pv"),
+                "subsidiary": row.get("subsidiary"),
+                "usuario_api": row.get("usuario_api"),
+                "data_carga": row.get("data_carga"),
+                "tracking_idx": idx,
+                "tracking_amount": item.get("amount"),
+                "tracking_date": item.get("date"),
+                "tracking_status": item.get("status"),
+            })
 
-    for _, valor in data.items():
-        if isinstance(valor, list):
-            return valor, None
+    return pd.DataFrame(registros)
 
-    return [data], None
-
-def tabela_existe(engine, schema: str, table: str) -> bool:
+def tabela_existe(engine, schema: str, table: str):
     insp = inspect(engine)
     return insp.has_table(table, schema=schema)
 
@@ -330,7 +307,7 @@ def processar_carga_mes(
                 "resposta": erro.get("resposta"),
                 "mensagem": "Erro na consulta da API"
             })
-            print(f"{nome_logico} | {erro.get("status_http")}: erro na API para {ano_mes} | usuário={conta.email} | pv={conta.pv}")
+            print(f"{nome_logico}: erro na API para {ano_mes} | usuário={conta.email} | pv={conta.pv}")
             return
 
         df = normalizar_lista(lista, origem_normalizacao, ano_mes, conta)
@@ -338,6 +315,11 @@ def processar_carga_mes(
         if df.empty:
             print(f"{nome_logico}: sem dados em {ano_mes} | usuário={conta.email} | pv={conta.pv}")
             return
+
+        df_tracking = pd.DataFrame()
+        if table == TBL_VENDAS:
+            df_tracking = normalizar_tracking_vendas(df)
+            # df = df.drop(columns=["tracking"], errors="ignore")
 
         tabela_ja_existe = tabela_existe(engine, schema, table)
 
@@ -349,6 +331,18 @@ def processar_carga_mes(
 
         inseridos = insert_mes(engine, schema, table, df)
         print(f"{nome_logico}: {inseridos} registro(s) inserido(s) em {ano_mes} | pv={conta.pv}")
+
+        if table == TBL_VENDAS and not df_tracking.empty:
+            tabela_tracking_existe = tabela_existe(engine, schema, TBL_VENDAS_TRACKING)
+
+            if tabela_tracking_existe:
+                deletados_tracking = delete_mes_pv(engine, schema, TBL_VENDAS_TRACKING, ano_mes, conta.pv)
+                print(f"VENDAS_TRACKING: {deletados_tracking} registro(s) apagado(s) de {ano_mes} | pv={conta.pv}")
+            else:
+                print(f"VENDAS_TRACKING: tabela {schema}.{TBL_VENDAS_TRACKING} ainda não existe. Será criada no primeiro insert.")
+
+            inseridos_tracking = insert_mes(engine, schema, TBL_VENDAS_TRACKING, df_tracking)
+            print(f"VENDAS_TRACKING: {inseridos_tracking} registro(s) inserido(s) em {ano_mes} | pv={conta.pv}")
 
     except Exception as e:
         logs.append({
@@ -415,35 +409,6 @@ if __name__ == "__main__":
                     logs=logs
                 )
 
-                processar_carga_mes(
-                    engine=engine,
-                    schema=SCHEMA,
-                    table=TBL_RECEBIDOS,
-                    auth_state=auth_state,
-                    conta=conta,
-                    start_date=start_date,
-                    end_date=end_date,
-                    ano_mes=ano_mes,
-                    nome_logico="RECEBIDOS",
-                    origem_normalizacao="payments",
-                    func_consulta=consultar_recebidos_mes,
-                    logs=logs
-                )
-
-                processar_carga_mes(
-                    engine=engine,
-                    schema=SCHEMA,
-                    table=TBL_RECEBIVEIS,
-                    auth_state=auth_state,
-                    conta=conta,
-                    start_date=start_date,
-                    end_date=end_date,
-                    ano_mes=ano_mes,
-                    nome_logico="RECEBÍVEIS",
-                    origem_normalizacao="receivables",
-                    func_consulta=consultar_recebiveis_mes,
-                    logs=logs
-                )
 
     if logs:
         print("\n=== FALHAS REGISTRADAS ===")
@@ -451,4 +416,6 @@ if __name__ == "__main__":
         print(df_logs.head(200))
     else:
         print("\nTudo OK!")
+
+
 # %%

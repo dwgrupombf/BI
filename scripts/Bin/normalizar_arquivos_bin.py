@@ -5,9 +5,6 @@ from pathlib import Path
 from sqlalchemy import create_engine, text
 import pandas as pd
 
-# =========================
-# CONFIG DW
-# =========================
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 
 dw = configparser.ConfigParser()
@@ -28,7 +25,7 @@ METADATA_COLS = [
     "lote",
     "adquirente",
     "cnpj",
-    "nsu",
+    "estabelecimento",
     "data_arquivo",
 ]
 
@@ -113,9 +110,6 @@ EDI_CONFIG = {
     },
 }
 
-# =========================
-# FUNÇÕES COMUNS
-# =========================
 def extrair_metadados_nome(nome_arquivo: str) -> dict:
     partes = nome_arquivo.replace(".json", "").split("-")
 
@@ -125,8 +119,8 @@ def extrair_metadados_nome(nome_arquivo: str) -> dict:
         "lote": None,
         "adquirente": None,
         "cnpj": None,
-        "nsu": None,
-        "data_arquivo": None,
+        "estabelecimento": None,
+        "data": None,
     }
 
     if len(partes) >= 7 and partes[0] == "EDI":
@@ -134,13 +128,18 @@ def extrair_metadados_nome(nome_arquivo: str) -> dict:
         meta["lote"] = partes[2]
         meta["adquirente"] = partes[3]
         meta["cnpj"] = partes[4]
-        meta["nsu"] = partes[5]
-        meta["data_arquivo"] = partes[6]
+        meta["estabelecimento"] = partes[5]
+
+        data_raw = partes[6]
+
+        try:
+            meta["data"] = pd.to_datetime(data_raw[:8], format="%Y%m%d").date()
+        except Exception:
+            meta["data"] = None
 
     return meta
 
-
-def normalize_dict_only_metadata(conteudo_dict: dict, meta: dict) -> pd.DataFrame:
+def normalize_dict_only_metadata(conteudo_dict: dict, meta: dict):
     if not conteudo_dict:
         return pd.DataFrame()
 
@@ -150,7 +149,7 @@ def normalize_dict_only_metadata(conteudo_dict: dict, meta: dict) -> pd.DataFram
     return df
 
 
-def explode_dict_column_only_nested(df: pd.DataFrame, col: str) -> pd.DataFrame:
+def explode_dict_column_only_nested(df: pd.DataFrame, col: str):
     if col not in df.columns:
         return pd.DataFrame()
 
@@ -180,7 +179,7 @@ def explode_dict_column_only_nested(df: pd.DataFrame, col: str) -> pd.DataFrame:
     return pd.concat([base, detalhe], axis=1)
 
 
-def serializar_colunas_complexas(df: pd.DataFrame) -> pd.DataFrame:
+def serializar_colunas_complexas(df: pd.DataFrame):
     if df is None or df.empty:
         return df
 
@@ -240,9 +239,6 @@ def delete_insert_por_nome_arquivo(engine, schema: str, tabela: str, df: pd.Data
 def juntar(lista):
     return pd.concat(lista, ignore_index=True, sort=False) if lista else pd.DataFrame()
 
-# =========================
-# PROCESSAMENTO GENÉRICO
-# =========================
 def processar_edi_generico(tipo: str, pasta: Path):
     cfg = EDI_CONFIG[tipo]
     arquivos = sorted(pasta.glob(cfg["glob"]))
@@ -282,9 +278,6 @@ def processar_edi_generico(tipo: str, pasta: Path):
 
     return {nome_tabela: juntar(lista) for nome_tabela, lista in acumuladores.items()}
 
-# =========================
-# PROCESSAMENTO ESPECIAL R
-# =========================
 def processar_edi_r_especial(pasta: Path):
     arquivos = sorted(pasta.glob(EDI_CONFIG["R"]["glob"]))
 
@@ -347,9 +340,6 @@ def processar_edi_r_especial(pasta: Path):
         "bin_edi_r_detail_events_deductions_ru": juntar(dfs_detail_events_deductions_ru),
     }
 
-# =========================
-# PROCESSAMENTO ESPECIAL S
-# =========================
 def processar_edi_s_especial(pasta: Path):
     arquivos = sorted(pasta.glob(EDI_CONFIG["S"]["glob"]))
 
