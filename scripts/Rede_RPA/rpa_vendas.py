@@ -20,6 +20,23 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 caminho_base = r"E:\RPA\RPA_Rede_2_0\downloads"
+tabela = "rede_rpa_vendas"
+
+engine = create_engine(
+    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
+    pool_pre_ping=True
+)
+
+query_arquivos = text(f'''
+    SELECT DISTINCT "arquivo_origem"
+    FROM "{SCHEMA}"."{tabela}"
+    WHERE "arquivo_origem" IS NOT NULL
+''')
+
+with engine.begin() as conn:
+    arquivos_carregados = pd.read_sql(query_arquivos, conn)
+
+arquivos_carregados_set = set(arquivos_carregados["arquivo_origem"].astype(str))
 
 dfs = []
 
@@ -29,12 +46,14 @@ for pasta in os.listdir(caminho_base):
     if os.path.isdir(caminho_pasta):
         for arquivo in os.listdir(caminho_pasta):
 
-            if "Rede_Rel_Vendas" in arquivo and arquivo.endswith((".xlsx", ".xls")):
-
+            if (
+                "Rede_Rel_Vendas" in arquivo
+                and arquivo.endswith((".xlsx", ".xls"))
+                and arquivo not in arquivos_carregados_set
+            ):
                 caminho_arquivo = os.path.join(caminho_pasta, arquivo)
 
                 try:
-            
                     df_raw = pd.read_excel(
                         caminho_arquivo,
                         header=None,
@@ -67,7 +86,7 @@ for pasta in os.listdir(caminho_base):
 
                     df["marca"] = pasta
                     df["arquivo_origem"] = arquivo
-                    df['data_atualizacao'] = datetime.now()
+                    df["data_atualizacao"] = datetime.now()
 
                     if "hora da venda" in df.columns:
                         df["hora da venda"] = pd.to_datetime(
@@ -76,33 +95,33 @@ for pasta in os.listdir(caminho_base):
                         ).dt.time
 
                     dfs.append(df)
+                    print(f"Novo arquivo processado: {arquivo}")
 
                 except Exception as e:
                     print(f"Erro ao processar {caminho_arquivo}: {e}")
 
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
+
+    df_final.to_sql(
+        name=tabela,
+        con=engine,
+                schema=SCHEMA,
+                if_exists="append",
+                index=False,
+                chunksize=5000,
+                method="multi"
+            )
+
+    print(f"\nCarga concluída.")
+    print(f"Arquivos novos inseridos: {len(dfs)}")
+    print(f"Linhas inseridas: {len(df_final)}")
+
 else:
     df_final = pd.DataFrame()
+    print("Nenhum arquivo novo encontrado para carregar.")
 
-engine = create_engine(
-    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
-    pool_pre_ping=True
-)
 
-with engine.begin() as conn:
-    conn.execute(
-        text(f'TRUNCATE TABLE "{SCHEMA}"."rede_rpa_vendas"')
-        
-    )
+df_final
 
-df_final.to_sql(
-    name="rede_rpa_vendas",
-    con=engine,
-    schema=SCHEMA,
-    if_exists="append",
-    index=False,
-    chunksize=5000,
-    method="multi"
-)
 # %%

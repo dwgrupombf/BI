@@ -5,8 +5,7 @@ import requests
 import json
 import math
 import pandas as pd
-pd.set_option("display.max_columns", 400)
-
+import hashlib
 from pandas import json_normalize
 from datetime import datetime, date
 import configparser
@@ -23,7 +22,9 @@ DATA_FINAL = HOJE
 
 BASE_URL = "https://api.userede.com.br/redelabs"
 
-''' CONFUGURAÇÕES DA API '''
+# =========================
+# API
+# =========================
 
 CREDENTIAL_PATH = Path(r"E:\BI\config\config_rede.ini")
 s = configparser.ConfigParser()
@@ -31,8 +32,9 @@ s.read(CREDENTIAL_PATH, encoding="utf-8")
 CLIENT_ID = s.get("auth", "client", fallback=None)
 CLIENT_SECRET = s.get("auth", "secret", fallback=None)
 
-
-''' CONFUGURAÇÕES DO DATALAKE '''
+# =========================
+# DATALAKE
+# =========================
 
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 dw = configparser.ConfigParser()
@@ -132,6 +134,10 @@ def normalizar_lista(
     df["subsidiary"] = str(conta.subsidiary)
     df["usuario_api"] = conta.email
     df["data_carga"] = datetime.now().replace(microsecond=0)
+
+    if origem == "sales":
+        df["venda_id"] = df.apply(gerar_venda_id, axis=1)
+
     return df
 
 def serializar_colunas_complexas(df: pd.DataFrame) -> pd.DataFrame:
@@ -166,6 +172,7 @@ def limpar_valores_invalidos(df: pd.DataFrame) -> pd.DataFrame:
 # =========================
 # CONSULTAS API
 # =========================
+
 def consultar_vendas_mes(
     auth_state: dict,
     start_date: str,
@@ -230,19 +237,35 @@ def normalizar_tracking_vendas(df_vendas: pd.DataFrame) -> pd.DataFrame:
                 continue
 
             registros.append({
+                "venda_id": row.get("venda_id"),
+                "tracking_idx": idx,
+                "tracking_amount": item.get("amount"),
+                "tracking_date": item.get("date"),
+                "tracking_status": item.get("status"),
                 "origem": row.get("origem"),
                 "ano_mes": row.get("ano_mes"),
                 "pv": row.get("pv"),
                 "subsidiary": row.get("subsidiary"),
                 "usuario_api": row.get("usuario_api"),
                 "data_carga": row.get("data_carga"),
-                "tracking_idx": idx,
-                "tracking_amount": item.get("amount"),
-                "tracking_date": item.get("date"),
-                "tracking_status": item.get("status"),
             })
 
     return pd.DataFrame(registros)
+
+def gerar_venda_id(row):
+    base = "|".join([
+        str(row.get("pv") or ""),
+        str(row.get("tid") or ""),
+        str(row.get("orderNumber") or ""),
+        str(row.get("saleSummaryNumber") or ""),
+        str(row.get("nsu") or ""),
+        str(row.get("authorizationCode") or ""),
+        str(row.get("saleDate") or ""),
+        str(row.get("saleHour") or ""),
+        str(row.get("amount") or ""),
+        str(row.get("installmentQuantity") or ""),
+    ])
+    return hashlib.md5(base.encode("utf-8")).hexdigest()
 
 def tabela_existe(engine, schema: str, table: str):
     insp = inspect(engine)

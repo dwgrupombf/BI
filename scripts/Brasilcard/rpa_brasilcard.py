@@ -113,3 +113,4 @@ df_final.to_sql(
     chunksize=5000,
     method="multi"
 )
+# %%
