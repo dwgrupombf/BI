@@ -2,10 +2,7 @@
 
 import os
 import pandas as pd
-import re
 from sqlalchemy import create_engine, text
-import os
-import pandas as pd
 from pathlib import Path
 import configparser
 from datetime import datetime
@@ -22,6 +19,25 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 caminho_base = r"E:\RPA\RPA_Financeiras"
+tabela = "capim_rpa_financiamento"
+
+engine = create_engine(
+    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
+    pool_pre_ping=True
+)
+
+# Buscar arquivos já carregados no banco
+with engine.begin() as conn:
+    arquivos_existentes = pd.read_sql(
+        text(f'''
+            SELECT DISTINCT "arquivo_origem"
+            FROM "{SCHEMA}"."{tabela}"
+            WHERE "arquivo_origem" IS NOT NULL
+        '''),
+        conn
+    )
+
+arquivos_existentes_set = set(arquivos_existentes["arquivo_origem"].astype(str))
 
 dfs = []
 
@@ -40,8 +56,9 @@ for arquivo in os.listdir(caminho_base):
 
     if (
         os.path.isfile(caminho_arquivo)
-        and arquivo.endswith(".xlsx")
+        and arquivo.lower().endswith(".xlsx")
         and "financiamento_capim" in arquivo.lower()
+        and arquivo not in arquivos_existentes_set
     ):
         try:
             xls = pd.ExcelFile(caminho_arquivo, engine="openpyxl")
@@ -64,40 +81,47 @@ for arquivo in os.listdir(caminho_base):
 
             df.columns = df.columns.astype(str).str.strip()
 
-            colunas_existentes = [col for col in colunas_desejadas if col in df.columns]
+            colunas_existentes = [
+                col for col in colunas_desejadas
+                if col in df.columns
+            ]
+
             df = df[colunas_existentes]
 
+            if df.empty:
+                print(f"Arquivo sem linhas válidas: {arquivo}")
+                continue
+
             df["arquivo_origem"] = arquivo
-            df['data_atualizacao'] = datetime.now()
+            df["data_atualizacao"] = datetime.now()
 
             dfs.append(df)
+
+            print(f"✔ Processado: {arquivo} | Linhas: {len(df)}")
 
         except Exception as e:
             print(f"Erro ao processar {arquivo}: {e}")
 
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
-else:
-    df_final = pd.DataFrame(columns=colunas_desejadas + ["arquivo_origem"])
 
-engine = create_engine(
-    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
-    pool_pre_ping=True
-)
-
-with engine.begin() as conn:
-    conn.execute(
-        text(f'TRUNCATE TABLE "{SCHEMA}"."capim_rpa_financiamento"')
-        
+    df_final.to_sql(
+        name=tabela,
+        con=engine,
+        schema=SCHEMA,
+        if_exists="append",
+        index=False,
+        chunksize=5000,
+        method="multi"
     )
 
-df_final.to_sql(
-    name="capim_rpa_financiamento",
-    con=engine,
-    schema=SCHEMA,
-    if_exists="append",
-    index=False,
-    chunksize=5000,
-    method="multi"
-)
+    print("\n🔥 Carga incremental concluída")
+    print(f"Arquivos novos carregados: {len(dfs)}")
+    print(f"Linhas inseridas: {len(df_final)}")
+
+else:
+    df_final = pd.DataFrame(
+        columns=colunas_desejadas + ["arquivo_origem", "data_atualizacao"]
+    )
+    print("Nenhum arquivo novo encontrado para carregar.")
 

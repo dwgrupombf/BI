@@ -1,4 +1,3 @@
-
 #%%
 
 from sqlalchemy import create_engine, text
@@ -20,6 +19,24 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 caminho_base = r"E:\RPA\RPA_Rede_2_0\downloads"
+tabela = "rede_rpa_a_receber"
+
+engine = create_engine(
+    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
+    pool_pre_ping=True
+)
+
+with engine.begin() as conn:
+    arquivos_existentes = pd.read_sql(
+        text(f'''
+            SELECT DISTINCT "arquivo_origem"
+            FROM "{SCHEMA}"."{tabela}"
+            WHERE "arquivo_origem" IS NOT NULL
+        '''),
+        conn
+    )
+
+arquivos_existentes_set = set(arquivos_existentes["arquivo_origem"].astype(str))
 
 dfs = []
 
@@ -29,17 +46,20 @@ for pasta in os.listdir(caminho_base):
     if os.path.isdir(caminho_pasta):
         for arquivo in os.listdir(caminho_pasta):
 
-            if "_A_RECEBER_" in arquivo and arquivo.endswith((".xlsx", ".xls")):
+            if (
+                "_A_RECEBER_" in arquivo
+                and arquivo.lower().endswith((".xlsx", ".xls"))
+                and arquivo not in arquivos_existentes_set
+            ):
 
                 caminho_arquivo = os.path.join(caminho_pasta, arquivo)
 
                 try:
-               
                     df_raw = pd.read_excel(
                         caminho_arquivo,
                         header=None,
                         engine="openpyxl",
-                        sheet_name='pagamentos futuros'
+                        sheet_name="pagamentos futuros"
                     )
 
                     header_row = None
@@ -57,7 +77,7 @@ for pasta in os.listdir(caminho_base):
                         caminho_arquivo,
                         skiprows=header_row,
                         engine="openpyxl",
-                        sheet_name='pagamentos futuros'
+                        sheet_name="pagamentos futuros"
                     )
 
                     df.columns = (
@@ -67,46 +87,46 @@ for pasta in os.listdir(caminho_base):
                         .str.lower()
                     )
 
+                    if df.empty:
+                        print(f"Arquivo sem linhas válidas: {arquivo}")
+                        continue
+
                     df["marca"] = pasta
                     df["arquivo_origem"] = arquivo
-                    df['data_atualizacao'] = datetime.now()
+                    df["data_atualizacao"] = datetime.now()
 
-                    if "ddata prevista do recebimento" in df.columns:
+                    # corrigido: antes estava "ddata prevista do recebimento"
+                    if "data prevista do recebimento" in df.columns:
                         df["data prevista do recebimento"] = pd.to_datetime(
                             df["data prevista do recebimento"],
                             errors="coerce"
-                        ).dt.time
+                        )
 
                     dfs.append(df)
+
+                    print(f"✔ Processado: {pasta}\\{arquivo} | Linhas: {len(df)}")
 
                 except Exception as e:
                     print(f"Erro ao processar {caminho_arquivo}: {e}")
 
-
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
-else:
-    df_final = pd.DataFrame()
 
-
-engine = create_engine(
-    f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
-    pool_pre_ping=True
-)
-
-with engine.begin() as conn:
-    conn.execute(
-        text(f'TRUNCATE TABLE "{SCHEMA}"."rede_rpa_a_receber"')
-        
+    df_final.to_sql(
+        name=tabela,
+        con=engine,
+        schema=SCHEMA,
+        if_exists="append",
+        index=False,
+        chunksize=5000,
+        method="multi"
     )
 
-df_final.to_sql(
-    name="rede_rpa_a_receber",
-    con=engine,
-    schema=SCHEMA,
-    if_exists="append",
-    index=False,
-    chunksize=5000,
-    method="multi"
-)
-# %%
+    print("\n🔥 Carga incremental concluída")
+    print(f"Arquivos novos carregados: {len(dfs)}")
+    print(f"Linhas inseridas: {len(df_final)}")
+
+else:
+    df_final = pd.DataFrame()
+    print("Nenhum arquivo novo encontrado para carregar.")
+
