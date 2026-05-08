@@ -15,8 +15,8 @@ credential_path = r"E:\BI\config"
 WORKSPACE_NAME = "MBF"
 
 DATAFLOWS = [ 
-    "elosgate_dimensoes"
-    , "elosgate_fatos"
+    "f_contratos_elosgate"
+    , "f_elosgate_recebimentos_pix"
     ]
 
 DATASETS = [ "" ]
