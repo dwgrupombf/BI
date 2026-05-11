@@ -18,7 +18,7 @@ DATAFLOWS = [
     "f_rede_api_recebidos"
     , "f_rede_api_recebiveis"
     , "f_rede_api_vendas" 
-     "f_rede_union_vendas"
+    , "f_rede_union_vendas"
     ]
 
 DATASETS = [ "" ]

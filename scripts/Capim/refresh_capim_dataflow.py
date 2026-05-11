@@ -15,7 +15,7 @@ credential_path = r"E:\BI\config"
 WORKSPACE_NAME = "MBF"
 
 DATAFLOWS = [ 
-    "capim_fatos"
+    "f_capim_rpa_financiamento"
     ]
 
 DATASETS = [ "" ]

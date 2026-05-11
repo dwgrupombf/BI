@@ -21,6 +21,8 @@ DATA_FINAL = HOJE
 # DATA_INICIAL = "01-01-2026"
 # DATA_FINAL   = "01-12-2026"
 BASE_URL = "https://api.userede.com.br/redelabs"
+LOG_PATH = Path(r"E:\BI\logs")
+LOG_FILE = LOG_PATH / "log_rede_recebiveis.txt"
 
 ''' CONFIGURAÇÕES DA API '''
 
@@ -43,6 +45,12 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 TBL_RECEBIVEIS = "rede_recebiveis"
+
+def write_log(message: str):
+    LOG_PATH.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ts} - {message}\n")
 
 def gerar_token(username: str, password: str) -> str:
     url = f"{BASE_URL}/oauth/token"
@@ -163,6 +171,44 @@ def limpar_valores_invalidos(df: pd.DataFrame) -> pd.DataFrame:
 # CONSULTAS API
 # =========================
 
+def extrair_page_key(data: dict):
+
+    if not isinstance(data, dict):
+        return None
+
+    cursor = data.get("cursor", {}) or {}
+
+    has_next = cursor.get("hasNextKey", False)
+    next_key = cursor.get("nextKey")
+
+    if str(has_next).lower() == "true" and next_key:
+        return str(next_key).replace("\n", "").replace("\r", "").strip()
+
+    return None
+
+
+def extrair_lista_recebiveis(data: dict):
+    """
+    Extrai a lista de recebíveis da resposta da API.
+    Mantém a lógica flexível do seu código original.
+    """
+
+    if not isinstance(data, dict):
+        return []
+
+    if "content" in data and isinstance(data["content"], dict):
+        for _, valor in data["content"].items():
+            if isinstance(valor, list):
+                return valor
+
+        return [data["content"]]
+
+    for _, valor in data.items():
+        if isinstance(valor, list):
+            return valor
+
+    return [data]
+
 def consultar_recebiveis_mes(
     auth_state: dict,
     start_date: str,
@@ -170,42 +216,68 @@ def consultar_recebiveis_mes(
     conta: ContaEstabelecimento
 ):
     url = f"{BASE_URL}/merchant-statement/v1/receivables/daily"
-    params = {
-        "startDate": start_date,
-        "endDate": end_date,
-        "size": 100
-    }
 
-    resp = fazer_get(
-        url=url,
-        params=params,
-        auth_state=auth_state,
-        extra_headers={
-            "merchant-id": str(conta.pv),
-            "Content-Type": "application/json"
-        }
-    )
+    todos_recebiveis = []
+    page_key = None
+    pagina = 1
 
-    if resp.status_code != 200:
-        return [], {
-            "tipo": "receivables",
-            "status_http": resp.status_code,
-            "resposta": resp.text
+    while True:
+        params = {
+            "startDate": start_date,
+            "endDate": end_date,
+            "size": 100
         }
 
-    data = resp.json()
+        if page_key:
+            params["pageKey"] = page_key
 
-    if "content" in data and isinstance(data["content"], dict):
-        for _, valor in data["content"].items():
-            if isinstance(valor, list):
-                return valor, None
-        return [data["content"]], None
+        resp = fazer_get(
+            url=url,
+            params=params,
+            auth_state=auth_state,
+            extra_headers={
+                "merchant-id": str(conta.pv),
+                "Content-Type": "application/json"
+            }
+        )
 
-    for _, valor in data.items():
-        if isinstance(valor, list):
-            return valor, None
+        if resp.status_code != 200:
+            return [], {
+                "tipo": "receivables",
+                "status_http": resp.status_code,
+                "resposta": resp.text,
+                "pagina": pagina,
+                "page_key": page_key
+            }
 
-    return [data], None
+        data = resp.json()
+
+        recebiveis = extrair_lista_recebiveis(data)
+
+        if recebiveis:
+            todos_recebiveis.extend(recebiveis)
+
+        proximo_page_key = extrair_page_key(data)
+
+        print(
+            f"RECEBÍVEIS API | página {pagina} | "
+            f"registros página: {len(recebiveis)} | "
+            f"total acumulado: {len(todos_recebiveis)} | "
+            f"tem próxima página: {bool(proximo_page_key)} | "
+            f"pv={conta.pv}"
+        )
+
+        if not proximo_page_key:
+            break
+
+        if proximo_page_key == page_key:
+            print("Atenção: pageKey repetido. Paginação interrompida para evitar loop infinito.")
+            break
+
+        page_key = proximo_page_key
+        pagina += 1
+
+    return todos_recebiveis, None
 
 def tabela_existe(engine, schema: str, table: str):
     insp = inspect(engine)
@@ -356,10 +428,32 @@ if __name__ == "__main__":
                     logs=logs
                 )
 
-    if logs:
-        print("\n=== FALHAS REGISTRADAS ===")
-        df_logs = pd.DataFrame(logs)
-        print(df_logs.head(200))
-    else:
-        print("\nTudo OK!")
-# %%
+if logs:
+    print("\n=== FALHAS REGISTRADAS ===")
+    write_log("=== INÍCIO DAS FALHAS REGISTRADAS ===")
+
+    for item in logs:
+        msg = (
+            f"etapa={item.get('etapa')} | "
+            f"ano_mes={item.get('ano_mes')} | "
+            f"usuario={item.get('usuario')} | "
+            f"pv={item.get('pv')} | "
+            f"tipo={item.get('tipo')} | "
+            f"mensagem={item.get('mensagem')}"
+        )
+
+        if item.get("status_http") is not None:
+            msg += f" | status_http={item.get('status_http')}"
+
+        if item.get("resposta") is not None:
+            msg += f" | resposta={item.get('resposta')}"
+
+        write_log(msg)
+        print(msg)
+
+    write_log("=== FIM DAS FALHAS REGISTRADAS ===")
+else:
+    msg = "Processamento concluído com sucesso, sem ocorrências registradas."
+    print(f"\n{msg}")
+    write_log(msg)
+

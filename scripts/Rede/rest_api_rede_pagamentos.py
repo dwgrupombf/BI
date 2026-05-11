@@ -22,6 +22,8 @@ DATA_FINAL = HOJE
 # DATA_FINAL   = "01-12-2026"
 
 BASE_URL = "https://api.userede.com.br/redelabs"
+LOG_PATH = Path(r"E:\BI\logs")
+LOG_FILE = LOG_PATH / "log_rede_pagamentos.txt"
 
 ''' CONFIGURAÇÕES DA API '''
 
@@ -44,6 +46,12 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 TBL_RECEBIDOS = "rede_recebidos"
+
+def write_log(message: str):
+    LOG_PATH.mkdir(parents=True, exist_ok=True)
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+    with open(LOG_FILE, "a", encoding="utf-8") as f:
+        f.write(f"{ts} - {message}\n")
 
 def gerar_token(username: str, password: str) -> str:
     url = f"{BASE_URL}/oauth/token"
@@ -161,9 +169,20 @@ def limpar_valores_invalidos(df: pd.DataFrame) -> pd.DataFrame:
 
     return df
 
-# =========================
-# CONSULTAS API
-# =========================
+def extrair_page_key(data: dict):
+
+    if not isinstance(data, dict):
+        return None
+
+    cursor = data.get("cursor", {}) or {}
+
+    has_next = cursor.get("hasNextKey", False)
+    next_key = cursor.get("nextKey")
+
+    if has_next and next_key:
+        return str(next_key).replace("\n", "").replace("\r", "").strip()
+
+    return None
 
 def consultar_recebidos_mes(
     auth_state: dict,
@@ -172,30 +191,66 @@ def consultar_recebidos_mes(
     conta: ContaEstabelecimento
 ):
     url = f"{BASE_URL}/merchant-statement/v1/payments"
-    params = {
-        "parentCompanyNumber": conta.pv,
-        "subsidiaries": conta.subsidiary,
-        "startDate": start_date,
-        "endDate": end_date,
-        "size": 100
-    }
 
-    resp = fazer_get(
-        url=url,
-        params=params,
-        auth_state=auth_state
-    )
+    todos_payments = []
+    page_key = None
+    pagina = 1
 
-    if resp.status_code != 200:
-        return [], {
-            "tipo": "payments",
-            "status_http": resp.status_code,
-            "resposta": resp.text
+    while True:
+        params = {
+            "parentCompanyNumber": conta.pv,
+            "subsidiaries": conta.subsidiary,
+            "startDate": start_date,
+            "endDate": end_date,
+            "size": 100
         }
 
-    data = resp.json()
-    payments = data.get("content", {}).get("payments", [])
-    return payments, None
+        if page_key:
+            params["pageKey"] = page_key
+
+        resp = fazer_get(
+            url=url,
+            params=params,
+            auth_state=auth_state
+        )
+
+        if resp.status_code != 200:
+            return [], {
+                "tipo": "payments",
+                "status_http": resp.status_code,
+                "resposta": resp.text,
+                "pagina": pagina,
+                "page_key": page_key
+            }
+
+        data = resp.json()
+
+        payments = data.get("content", {}).get("payments", [])
+
+        if payments:
+            todos_payments.extend(payments)
+
+        proximo_page_key = extrair_page_key(data)
+
+        print(
+            f"RECEBIDOS API | página {pagina} | "
+            f"registros página: {len(payments)} | "
+            f"total acumulado: {len(todos_payments)} | "
+            f"tem próxima página: {bool(proximo_page_key)} | "
+            f"pv={conta.pv}"
+        )
+
+        if not proximo_page_key:
+            break
+
+        if proximo_page_key == page_key:
+            print("Atenção: pageKey repetido. Paginação interrompida para evitar loop infinito.")
+            break
+
+        page_key = proximo_page_key
+        pagina += 1
+
+    return todos_payments, None
 
 
 def tabela_existe(engine, schema: str, table: str):
@@ -347,10 +402,34 @@ if __name__ == "__main__":
                     logs=logs
                 )
 
-    if logs:
-        print("\n=== FALHAS REGISTRADAS ===")
-        df_logs = pd.DataFrame(logs)
-        print(df_logs.head(200))
-    else:
-        print("\nTudo OK!")
+if logs:
+    print("\n=== FALHAS REGISTRADAS ===")
+    write_log("=== INÍCIO DAS FALHAS REGISTRADAS ===")
+
+    for item in logs:
+        msg = (
+            f"etapa={item.get('etapa')} | "
+            f"ano_mes={item.get('ano_mes')} | "
+            f"usuario={item.get('usuario')} | "
+            f"pv={item.get('pv')} | "
+            f"tipo={item.get('tipo')} | "
+            f"mensagem={item.get('mensagem')}"
+        )
+
+        if item.get("status_http") is not None:
+            msg += f" | status_http={item.get('status_http')}"
+
+        if item.get("resposta") is not None:
+            msg += f" | resposta={item.get('resposta')}"
+
+        write_log(msg)
+        print(msg)
+
+    write_log("=== FIM DAS FALHAS REGISTRADAS ===")
+else:
+    msg = "Processamento concluído com sucesso, sem ocorrências registradas."
+    print(f"\n{msg}")
+    write_log(msg)
+
+
 # %%
