@@ -12,5 +12,5 @@ set "PY_SCRIPT=E:\BI\scripts\Giga\refresh_giga_dataflow.py"
   -application org.knime.product.KNIME_BATCH_APPLICATION ^
   -workflowDir="%WF_DIR%"
 
-REM python "%PY_SCRIPT%"
+python "%PY_SCRIPT%"
 

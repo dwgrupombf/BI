@@ -224,3 +224,5 @@ else:
     print("Nenhum arquivo novo encontrado para carregar.")
 
 
+
+# %%

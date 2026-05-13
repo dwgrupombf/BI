@@ -14,12 +14,12 @@ from pathlib import Path
 import calendar
 from sqlalchemy import create_engine, text, inspect
 
-HOJE = datetime.today().strftime("%d-%m-%Y")
-DATA_INICIAL = HOJE
-DATA_FINAL = HOJE
+# HOJE = datetime.today().strftime("%d-%m-%Y")
+# DATA_INICIAL = HOJE
+# DATA_FINAL = HOJE
 
-# DATA_INICIAL = "01-01-2026"
-# DATA_FINAL   = "01-12-2026"
+DATA_INICIAL = "01-01-2026"
+DATA_FINAL   = "01-12-2026"
 
 BASE_URL = "https://api.userede.com.br/redelabs"
 LOG_PATH = Path(r"E:\BI\logs")
