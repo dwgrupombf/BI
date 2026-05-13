@@ -78,7 +78,8 @@ def get_workspace_id(headers):
 def refresh_dataflow(headers, workspace_id, dataflow_name, payload):
     r = requests.get(
         BASE_URL + f"groups/{workspace_id}/dataflows", headers=headers
-    ) r.raise_for_status()
+    )
+    r.raise_for_status()
 
     for df in r.json()["value"]:
         if df["name"] == dataflow_name:
