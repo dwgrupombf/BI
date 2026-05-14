@@ -1,6 +1,6 @@
 #%%
 
-from sqlalchemy import create_engine, text, bindparam
+from sqlalchemy import create_engine, text
 import pandas as pd
 from pathlib import Path
 import configparser
@@ -10,7 +10,12 @@ from io import StringIO
 from psycopg2 import sql
 
 
+# ============================================================
+# CONFIGURAÇÕES
+# ============================================================
+
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
+
 dw = configparser.ConfigParser()
 dw.read(DW_CONFIG_PATH, encoding="utf-8")
 
@@ -25,11 +30,20 @@ caminho_base = Path(r"E:\RPA\RPA_Rede_2_0\downloads")
 tabela = "rede_rpa_a_receber"
 sheet_name = "pagamentos futuros"
 
+PERIODO_ARQUIVO = datetime.now().strftime("%m_%Y")
+# PERIODO_ARQUIVO = "05_2026"
+PADRAO_PERIODO = f"{PERIODO_ARQUIVO}_"
+
+
 engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
 
+
+# ============================================================
+# FUNÇÕES
+# ============================================================
 
 def encontrar_linha_cabecalho(
     caminho_arquivo: Path,
@@ -86,12 +100,15 @@ def encontrar_linha_cabecalho(
         return None
 
 
-def listar_arquivos_a_receber(caminho_base: Path):
+def listar_arquivos_a_receber_periodo(caminho_base: Path, padrao_periodo: str):
+
+
     arquivos = []
 
     for caminho_arquivo in caminho_base.rglob("*"):
         if (
             caminho_arquivo.is_file()
+            and caminho_arquivo.name.startswith(padrao_periodo)
             and "_A_RECEBER_" in caminho_arquivo.name
             and caminho_arquivo.suffix.lower() in [".xlsx", ".xlsm", ".xls"]
         ):
@@ -122,12 +139,7 @@ def obter_colunas_tabela(engine, schema: str, tabela: str):
     return df_cols["column_name"].tolist()
 
 
-def copy_df_to_postgres(df: pd.DataFrame, engine, schema: str, tabela: str):
-
-    if df.empty:
-        print("DataFrame vazio. Nada para carregar.")
-        return
-
+def preparar_buffer_copy(df: pd.DataFrame):
     buffer = StringIO()
 
     df.to_csv(
@@ -140,12 +152,51 @@ def copy_df_to_postgres(df: pd.DataFrame, engine, schema: str, tabela: str):
 
     buffer.seek(0)
 
+    return buffer
+
+
+def substituir_periodo_no_dw(
+    df: pd.DataFrame,
+    engine,
+    schema: str,
+    tabela: str,
+    padrao_periodo: str
+):
+
+
+    if df.empty:
+        print("DataFrame vazio. Nenhuma exclusão ou carga será feita.")
+        return
+
+    buffer = preparar_buffer_copy(df)
     colunas = list(df.columns)
 
     raw_conn = engine.raw_connection()
 
     try:
         with raw_conn.cursor() as cursor:
+
+            delete_sql = sql.SQL("""
+                DELETE FROM {}.{}
+                WHERE "arquivo_origem" LIKE %s
+                  AND "arquivo_origem" LIKE %s
+            """).format(
+                sql.Identifier(schema),
+                sql.Identifier(tabela)
+            )
+
+            cursor.execute(
+                delete_sql,
+                [
+                    f"{padrao_periodo}%",
+                    "%_A_RECEBER_%"
+                ]
+            )
+
+            linhas_deletadas = cursor.rowcount
+
+            print(f"Linhas apagadas no DW para {padrao_periodo}%: {linhas_deletadas}")
+
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
                 FROM STDIN
@@ -165,13 +216,20 @@ def copy_df_to_postgres(df: pd.DataFrame, engine, schema: str, tabela: str):
 
         raw_conn.commit()
 
+        print("DELETE + INSERT concluídos com sucesso.")
+
     except Exception as e:
         raw_conn.rollback()
+        print("Erro na carga. O DELETE foi desfeito.")
         raise e
 
     finally:
         raw_conn.close()
 
+
+# ============================================================
+# GARANTIR ÍNDICE
+# ============================================================
 
 with engine.begin() as conn:
     conn.execute(text(f'''
@@ -180,46 +238,30 @@ with engine.begin() as conn:
     '''))
 
 
-arquivos_encontrados = listar_arquivos_a_receber(caminho_base)
-nomes_arquivos = [arquivo.name for arquivo in arquivos_encontrados]
+# ============================================================
+# LISTAR APENAS ARQUIVOS DO PERÍODO
+# ============================================================
 
-print(f"Arquivos A_RECEBER encontrados na pasta: {len(nomes_arquivos)}")
+arquivos_encontrados = listar_arquivos_a_receber_periodo(
+    caminho_base=caminho_base,
+    padrao_periodo=PADRAO_PERIODO
+)
 
+print(f"Período selecionado: {PERIODO_ARQUIVO}")
+print(f"Arquivos A_RECEBER encontrados para o período: {len(arquivos_encontrados)}")
 
-if nomes_arquivos:
-    query_arquivos = text(f'''
-        SELECT DISTINCT "arquivo_origem"
-        FROM "{SCHEMA}"."{tabela}"
-        WHERE "arquivo_origem" IN :arquivos
-    ''').bindparams(bindparam("arquivos", expanding=True))
-
-    with engine.begin() as conn:
-        arquivos_carregados = pd.read_sql(
-            query_arquivos,
-            conn,
-            params={"arquivos": nomes_arquivos}
-        )
-
-    arquivos_carregados_set = set(
-        arquivos_carregados["arquivo_origem"].astype(str)
-    )
-
-else:
-    arquivos_carregados_set = set()
+for arquivo in arquivos_encontrados:
+    print(f" - {arquivo.parent.name}\\{arquivo.name}")
 
 
-arquivos_novos = [
-    arquivo for arquivo in arquivos_encontrados
-    if arquivo.name not in arquivos_carregados_set
-]
-
-print(f"Arquivos novos para processar: {len(arquivos_novos)}")
-
+# ============================================================
+# PROCESSAR ARQUIVOS
+# ============================================================
 
 dfs = []
 data_carga = datetime.now()
 
-for caminho_arquivo in arquivos_novos:
+for caminho_arquivo in arquivos_encontrados:
     arquivo = caminho_arquivo.name
     pasta = caminho_arquivo.parent.name
 
@@ -278,6 +320,10 @@ for caminho_arquivo in arquivos_novos:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
 
 
+# ============================================================
+# DELETE DO PERÍODO + INSERT DOS ARQUIVOS PROCESSADOS
+# ============================================================
+
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
 
@@ -287,15 +333,13 @@ if dfs:
         tabela=tabela
     )
 
-    colunas_df = list(df_final.columns)
-
     colunas_validas = [
-        coluna for coluna in colunas_df
+        coluna for coluna in df_final.columns
         if coluna in colunas_tabela
     ]
 
     colunas_ignoradas = [
-        coluna for coluna in colunas_df
+        coluna for coluna in df_final.columns
         if coluna not in colunas_tabela
     ]
 
@@ -305,20 +349,22 @@ if dfs:
 
     df_final = df_final[colunas_validas]
 
-    copy_df_to_postgres(
+    substituir_periodo_no_dw(
         df=df_final,
         engine=engine,
         schema=SCHEMA,
-        tabela=tabela
+        tabela=tabela,
+        padrao_periodo=PADRAO_PERIODO
     )
 
-    print("\n🔥 Carga incremental concluída")
-    print(f"Arquivos novos carregados: {len(dfs)}")
+    print(f"Período: {PERIODO_ARQUIVO}")
+    print(f"Arquivos processados: {len(dfs)}")
     print(f"Linhas inseridas: {len(df_final)}")
 
 else:
     df_final = pd.DataFrame()
-    print("Nenhum arquivo novo encontrado para carregar.")
+    print("Nenhum arquivo válido encontrado para carregar.")
+    print("Nenhum DELETE foi executado no DW.")
 
 
 # %%
