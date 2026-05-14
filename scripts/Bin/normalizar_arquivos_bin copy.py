@@ -158,15 +158,21 @@ def explode_dict_column_only_nested(df: pd.DataFrame, col: str):
 
     tmp = df[cols_keep].copy()
 
-    tmp = tmp[tmp[col].apply(lambda x: isinstance(x, list) and len(x) > 0)]
+    def preparar(x):
+        if isinstance(x, list) and len(x) > 0:
+            return x
+        return [None]
 
-    if tmp.empty:
-        return pd.DataFrame()
-
+    tmp[col] = tmp[col].apply(preparar)
     tmp = tmp.explode(col, ignore_index=True)
 
-    detalhe = pd.json_normalize(tmp[col], sep="_")
-    detalhe.index = tmp.index
+    mask = tmp[col].notna()
+
+    detalhe = pd.DataFrame(index=tmp.index)
+    if mask.any():
+        detalhe_valid = pd.json_normalize(tmp.loc[mask, col], sep="_")
+        detalhe_valid.index = tmp.loc[mask].index
+        detalhe = detalhe.combine_first(detalhe_valid)
 
     base = tmp.drop(columns=[col])
 
@@ -387,10 +393,6 @@ def executar_tipo(tipo: str, engine, pasta: Path):
         resultado.update(processar_edi_s_especial(pasta))
 
     for nome_tabela, df in resultado.items():
-        if df is None or df.empty:
-            print(f"Ignorado sem dados: {SCHEMA}.{nome_tabela}")
-            continue
-
         qtd = delete_insert_por_nome_arquivo(engine, SCHEMA, nome_tabela, df)
         print(f"Tabela carregada: {SCHEMA}.{nome_tabela} -> {qtd} linhas")
 

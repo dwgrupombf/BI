@@ -40,7 +40,6 @@ engine = create_engine(
     pool_pre_ping=True
 )
 
-
 # ============================================================
 # FUNÇÕES
 # ============================================================
@@ -99,9 +98,7 @@ def encontrar_linha_cabecalho(
 
         return None
 
-
 def listar_arquivos_a_receber_periodo(caminho_base: Path, padrao_periodo: str):
-
 
     arquivos = []
 
@@ -115,7 +112,6 @@ def listar_arquivos_a_receber_periodo(caminho_base: Path, padrao_periodo: str):
             arquivos.append(caminho_arquivo)
 
     return arquivos
-
 
 def obter_colunas_tabela(engine, schema: str, tabela: str):
     query = text("""
@@ -138,7 +134,6 @@ def obter_colunas_tabela(engine, schema: str, tabela: str):
 
     return df_cols["column_name"].tolist()
 
-
 def preparar_buffer_copy(df: pd.DataFrame):
     buffer = StringIO()
 
@@ -154,7 +149,6 @@ def preparar_buffer_copy(df: pd.DataFrame):
 
     return buffer
 
-
 def substituir_periodo_no_dw(
     df: pd.DataFrame,
     engine,
@@ -162,7 +156,6 @@ def substituir_periodo_no_dw(
     tabela: str,
     padrao_periodo: str
 ):
-
 
     if df.empty:
         print("DataFrame vazio. Nenhuma exclusão ou carga será feita.")
@@ -226,21 +219,11 @@ def substituir_periodo_no_dw(
     finally:
         raw_conn.close()
 
-
-# ============================================================
-# GARANTIR ÍNDICE
-# ============================================================
-
 with engine.begin() as conn:
     conn.execute(text(f'''
         CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
         ON "{SCHEMA}"."{tabela}" ("arquivo_origem")
     '''))
-
-
-# ============================================================
-# LISTAR APENAS ARQUIVOS DO PERÍODO
-# ============================================================
 
 arquivos_encontrados = listar_arquivos_a_receber_periodo(
     caminho_base=caminho_base,
@@ -252,11 +235,6 @@ print(f"Arquivos A_RECEBER encontrados para o período: {len(arquivos_encontrado
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
-
-
-# ============================================================
-# PROCESSAR ARQUIVOS
-# ============================================================
 
 dfs = []
 data_carga = datetime.now()
@@ -318,11 +296,6 @@ for caminho_arquivo in arquivos_encontrados:
 
     except Exception as e:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
-
-
-# ============================================================
-# DELETE DO PERÍODO + INSERT DOS ARQUIVOS PROCESSADOS
-# ============================================================
 
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)

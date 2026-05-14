@@ -225,21 +225,11 @@ def substituir_periodo_no_dw(
     finally:
         raw_conn.close()
 
-
-# ============================================================
-# GARANTIR ÍNDICE
-# ============================================================
-
 with engine.begin() as conn:
     conn.execute(text(f'''
         CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
         ON "{SCHEMA}"."{tabela}" ("arquivo_origem")
     '''))
-
-
-# ============================================================
-# LISTAR APENAS ARQUIVOS DO PERÍODO
-# ============================================================
 
 arquivos_encontrados = listar_arquivos_recebidos_periodo(
     caminho_base=caminho_base,
@@ -251,11 +241,6 @@ print(f"Arquivos RECEBIDOS encontrados para o período: {len(arquivos_encontrado
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
-
-
-# ============================================================
-# PROCESSAR ARQUIVOS
-# ============================================================
 
 dfs = []
 data_carga = datetime.now()
@@ -317,11 +302,6 @@ for caminho_arquivo in arquivos_encontrados:
 
     except Exception as e:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
-
-
-# ============================================================
-# DELETE DO PERÍODO + INSERT DOS ARQUIVOS PROCESSADOS
-# ============================================================
 
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)

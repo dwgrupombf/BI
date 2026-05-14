@@ -15,7 +15,7 @@ credential_path = r"E:\BI\config"
 WORKSPACE_NAME = "MBF"
 
 DATAFLOWS = [ 
-    "bin_fatos"
+    "f_bin_recibos_vendas_credito"
     ]
 
 DATASETS = [ "" ]
