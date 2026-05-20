@@ -33,16 +33,10 @@ caminho_base = Path(r"E:\RPA\RPA_Rede_2_0\downloads")
 tabela = "rede_rpa_recebidos_ajustes"
 sheet_name = "ajustes"
 
-PERIODO_ARQUIVO = datetime.now().strftime("%m_%Y")
-# PERIODO_ARQUIVO = "04_2026"
-
-PADRAO_PERIODO = f"{PERIODO_ARQUIVO}_"
-
 engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
-
 
 def criar_tabela_ajustes_se_nao_existir(engine, schema: str, tabela: str):
 
@@ -83,6 +77,7 @@ def criar_tabela_ajustes_se_nao_existir(engine, schema: str, tabela: str):
         '''))
 
     print(f'Tabela "{schema}"."{tabela}" verificada/criada com sucesso.')
+
 
 
 def encontrar_linha_cabecalho(
@@ -139,12 +134,12 @@ def encontrar_linha_cabecalho(
         return None
 
 
-def listar_arquivos_ajustes_periodo(caminho_base: Path, padrao_periodo: str):
+def listar_arquivos_ajustes(caminho_base: Path):
 
     padroes = [
-        f"{padrao_periodo}*_RECEBIDOS_*.xlsx",
-        f"{padrao_periodo}*_RECEBIDOS_*.xlsm",
-        f"{padrao_periodo}*_RECEBIDOS_*.xls"
+        "*_RECEBIDOS_*.xlsx",
+        "*_RECEBIDOS_*.xlsm",
+        "*_RECEBIDOS_*.xls"
     ]
 
     arquivos = chain.from_iterable(
@@ -229,12 +224,11 @@ def converter_numero_decimal(serie: pd.Series):
     return serie.apply(tratar_valor)
 
 
-def substituir_periodo_ajustes_no_dw(
+def substituir_ajustes_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
-    tabela: str,
-    padrao_periodo: str
+    tabela: str
 ):
 
     if df.empty:
@@ -252,24 +246,17 @@ def substituir_periodo_ajustes_no_dw(
             delete_sql = sql.SQL("""
                 DELETE FROM {}.{}
                 WHERE "arquivo_origem" IS NOT NULL
-                  AND "arquivo_origem" LIKE %s
-                  AND "arquivo_origem" LIKE %s
+                  AND POSITION('_RECEBIDOS_' IN "arquivo_origem") > 0
             """).format(
                 sql.Identifier(schema),
                 sql.Identifier(tabela)
             )
 
-            cursor.execute(
-                delete_sql,
-                [
-                    f"{padrao_periodo}%",
-                    "%_RECEBIDOS_%"
-                ]
-            )
+            cursor.execute(delete_sql)
 
             linhas_deletadas = cursor.rowcount
 
-            print(f"Linhas de AJUSTES apagadas no DW para {padrao_periodo}%: {linhas_deletadas}")
+            print(f"Linhas de AJUSTES apagadas no DW: {linhas_deletadas}")
 
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
@@ -290,7 +277,7 @@ def substituir_periodo_ajustes_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE + INSERT de AJUSTES concluídos com sucesso.")
+        print("DELETE + INSERT de todos os AJUSTES concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
@@ -300,24 +287,15 @@ def substituir_periodo_ajustes_no_dw(
     finally:
         raw_conn.close()
 
-
 criar_tabela_ajustes_se_nao_existir(
     engine=engine,
     schema=SCHEMA,
     tabela=tabela
 )
 
-
-arquivos_encontrados = listar_arquivos_ajustes_periodo(
-    caminho_base=caminho_base,
-    padrao_periodo=PADRAO_PERIODO
+arquivos_encontrados = listar_arquivos_ajustes(
+    caminho_base=caminho_base
 )
-
-print(f"Período selecionado: {PERIODO_ARQUIVO}")
-print(f"Arquivos RECEBIDOS encontrados para o período: {len(arquivos_encontrados)}")
-
-for arquivo in arquivos_encontrados:
-    print(f" - {arquivo.parent.name}\\{arquivo.name}")
 
 dfs = []
 data_carga = datetime.now()
@@ -399,7 +377,6 @@ for caminho_arquivo in arquivos_encontrados:
     except Exception as e:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
 
-
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
 
@@ -429,21 +406,19 @@ if dfs:
         print("Após filtrar as colunas válidas, o DataFrame ficou vazio.")
         print("Nenhum DELETE foi executado no DW.")
     else:
-        substituir_periodo_ajustes_no_dw(
+        substituir_ajustes_no_dw(
             df=df_final,
             engine=engine,
             schema=SCHEMA,
-            tabela=tabela,
-            padrao_periodo=PADRAO_PERIODO
+            tabela=tabela
         )
 
-        print(f"Período: {PERIODO_ARQUIVO}")
         print(f"Arquivos processados: {len(dfs)}")
         print(f"Linhas inseridas: {len(df_final)}")
 
 else:
     df_final = pd.DataFrame()
-    print(f"Nenhum arquivo válido encontrado para o período {PERIODO_ARQUIVO}.")
+    print("Nenhum arquivo válido encontrado para carregar.")
     print("Nenhum DELETE foi executado no DW.")
 
 
