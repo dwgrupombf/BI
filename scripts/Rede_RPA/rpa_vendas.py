@@ -1,6 +1,7 @@
 #%%
 
 from sqlalchemy import create_engine, text
+from itertools import chain
 import pandas as pd
 from pathlib import Path
 import configparser
@@ -9,10 +10,12 @@ import re
 from openpyxl import load_workbook
 from io import StringIO
 from psycopg2 import sql
+import warnings
 
-# ============================================================
-# CONFIGURAÇÕES
-# ============================================================
+warnings.filterwarnings(
+    "ignore",
+    message="Workbook contains no default style, apply openpyxl's default"
+)
 
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 
@@ -38,10 +41,6 @@ engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
-
-# ============================================================
-# FUNÇÕES
-# ============================================================
 
 def extrair_pv_nome_arquivo(nome_arquivo: str):
 
@@ -80,18 +79,17 @@ def encontrar_linha_cabecalho(caminho_arquivo: Path, texto="data da venda", max_
 
 def listar_arquivos_vendas_periodo(caminho_base: Path, padrao_periodo: str):
 
-    arquivos = []
+    padroes = [
+        f"{padrao_periodo}*Rede_Rel_Vendas*.xlsx",
+        f"{padrao_periodo}*Rede_Rel_Vendas*.xlsm"
+    ]
 
-    for caminho_arquivo in caminho_base.rglob("*"):
-        if (
-            caminho_arquivo.is_file()
-            and caminho_arquivo.name.startswith(padrao_periodo)
-            and "Rede_Rel_Vendas" in caminho_arquivo.name
-            and caminho_arquivo.suffix.lower() in [".xlsx", ".xlsm"]
-        ):
-            arquivos.append(caminho_arquivo)
+    arquivos = chain.from_iterable(
+        caminho_base.rglob(padrao)
+        for padrao in padroes
+    )
 
-    return arquivos
+    return sorted(arquivos)
 
 
 def obter_colunas_tabela(engine, schema: str, tabela: str):

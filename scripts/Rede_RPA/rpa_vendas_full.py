@@ -1,10 +1,12 @@
 #%%
 
 from sqlalchemy import create_engine, text
+from itertools import chain
 import pandas as pd
 from pathlib import Path
 import configparser
 from datetime import datetime
+import re
 from openpyxl import load_workbook
 from io import StringIO
 from psycopg2 import sql
@@ -14,11 +16,6 @@ warnings.filterwarnings(
     "ignore",
     message="Workbook contains no default style, apply openpyxl's default"
 )
-
-
-# ============================================================
-# CONFIGURAÇÕES
-# ============================================================
 
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 
@@ -33,93 +30,73 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 caminho_base = Path(r"E:\RPA\RPA_Rede_2_0\downloads")
-tabela = "rede_rpa_a_receber"
-sheet_name = "pagamentos futuros"
-
-PERIODO_ARQUIVO = datetime.now().strftime("%m_%Y")
-# PERIODO_ARQUIVO = "05_2026"
-PADRAO_PERIODO = f"{PERIODO_ARQUIVO}_"
-
+tabela = "rede_rpa_vendas"
 
 engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
 
-# ============================================================
-# FUNÇÕES
-# ============================================================
+
+def extrair_pv_nome_arquivo(nome_arquivo: str):
+
+    match = re.search(r"^\d{2}_\d{4}_([0-9]+)_", nome_arquivo)
+    return match.group(1) if match else None
+
 
 def encontrar_linha_cabecalho(
     caminho_arquivo: Path,
-    texto="data prevista do recebimento",
-    sheet_name="pagamentos futuros",
+    texto="data da venda",
     max_linhas=80
 ):
 
-    if caminho_arquivo.suffix.lower() in [".xlsx", ".xlsm"]:
-        wb = load_workbook(
-            filename=caminho_arquivo,
-            read_only=True,
-            data_only=True
-        )
+    wb = load_workbook(
+        filename=caminho_arquivo,
+        read_only=True,
+        data_only=True
+    )
 
-        try:
-            if sheet_name not in wb.sheetnames:
-                print(f"Aba '{sheet_name}' não encontrada: {caminho_arquivo.name}")
-                return None
+    try:
+        ws = wb.active
 
-            ws = wb[sheet_name]
+        for idx, row in enumerate(
+            ws.iter_rows(min_row=1, max_row=max_linhas, values_only=True),
+            start=0
+        ):
+            conteudo_linha = " ".join(
+                "" if valor is None else str(valor).strip().lower()
+                for valor in row
+            )
 
-            for idx, row in enumerate(
-                ws.iter_rows(min_row=1, max_row=max_linhas, values_only=True),
-                start=0
-            ):
-                conteudo_linha = " ".join(
-                    "" if valor is None else str(valor).strip().lower()
-                    for valor in row
-                )
-
-                if texto in conteudo_linha:
-                    return idx
-
-        finally:
-            wb.close()
-
-        return None
-
-    else:
-
-        df_amostra = pd.read_excel(
-            caminho_arquivo,
-            header=None,
-            sheet_name=sheet_name,
-            nrows=max_linhas,
-            engine="xlrd"
-        )
-
-        for idx, row in df_amostra.iterrows():
-            if texto in str(row.values).lower():
+            if texto in conteudo_linha:
                 return idx
 
-        return None
+    finally:
+        wb.close()
 
-def listar_arquivos_a_receber_periodo(caminho_base: Path, padrao_periodo: str):
+    return None
 
-    arquivos = []
 
-    for caminho_arquivo in caminho_base.rglob("*"):
-        if (
-            caminho_arquivo.is_file()
-            and caminho_arquivo.name.startswith(padrao_periodo)
-            and "_A_RECEBER_" in caminho_arquivo.name
-            and caminho_arquivo.suffix.lower() in [".xlsx", ".xlsm", ".xls"]
-        ):
-            arquivos.append(caminho_arquivo)
+def listar_arquivos_vendas(caminho_base: Path):
 
-    return arquivos
+    padroes = [
+        "*Rede_Rel_Vendas*.xlsx",
+        "*Rede_Rel_Vendas*.xlsm"
+    ]
+
+    arquivos = chain.from_iterable(
+        caminho_base.rglob(padrao)
+        for padrao in padroes
+    )
+
+    return sorted(
+        arquivo for arquivo in arquivos
+        if arquivo.is_file()
+    )
+
 
 def obter_colunas_tabela(engine, schema: str, tabela: str):
+
     query = text("""
         SELECT column_name
         FROM information_schema.columns
@@ -140,7 +117,9 @@ def obter_colunas_tabela(engine, schema: str, tabela: str):
 
     return df_cols["column_name"].tolist()
 
+
 def preparar_buffer_copy(df: pd.DataFrame):
+
     buffer = StringIO()
 
     df.to_csv(
@@ -155,12 +134,12 @@ def preparar_buffer_copy(df: pd.DataFrame):
 
     return buffer
 
-def substituir_periodo_no_dw(
+
+def substituir_vendas_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
-    tabela: str,
-    padrao_periodo: str
+    tabela: str
 ):
 
     if df.empty:
@@ -177,8 +156,8 @@ def substituir_periodo_no_dw(
 
             delete_sql = sql.SQL("""
                 DELETE FROM {}.{}
-                WHERE "arquivo_origem" LIKE %s
-                  AND "arquivo_origem" LIKE %s
+                WHERE "arquivo_origem" IS NOT NULL
+                  AND "arquivo_origem" ILIKE %s
             """).format(
                 sql.Identifier(schema),
                 sql.Identifier(tabela)
@@ -186,15 +165,12 @@ def substituir_periodo_no_dw(
 
             cursor.execute(
                 delete_sql,
-                [
-                    f"{padrao_periodo}%",
-                    "%_A_RECEBER_%"
-                ]
+                ["%Rede_Rel_Vendas%"]
             )
 
             linhas_deletadas = cursor.rowcount
 
-            print(f"Linhas apagadas no DW para {padrao_periodo}%: {linhas_deletadas}")
+            print(f"Linhas de VENDAS apagadas no DW: {linhas_deletadas}")
 
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
@@ -215,7 +191,7 @@ def substituir_periodo_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE + INSERT concluídos com sucesso.")
+        print("DELETE + INSERT de todas as VENDAS concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
@@ -225,22 +201,25 @@ def substituir_periodo_no_dw(
     finally:
         raw_conn.close()
 
+
 with engine.begin() as conn:
     conn.execute(text(f'''
         CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
         ON "{SCHEMA}"."{tabela}" ("arquivo_origem")
     '''))
 
-arquivos_encontrados = listar_arquivos_a_receber_periodo(
-    caminho_base=caminho_base,
-    padrao_periodo=PADRAO_PERIODO
+
+
+arquivos_encontrados = listar_arquivos_vendas(
+    caminho_base=caminho_base
 )
 
-print(f"Período selecionado: {PERIODO_ARQUIVO}")
-print(f"Arquivos A_RECEBER encontrados para o período: {len(arquivos_encontrados)}")
+print(f"Arquivos de VENDAS encontrados: {len(arquivos_encontrados)}")
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
+
+
 
 dfs = []
 data_carga = datetime.now()
@@ -252,25 +231,17 @@ for caminho_arquivo in arquivos_encontrados:
     try:
         header_row = encontrar_linha_cabecalho(
             caminho_arquivo=caminho_arquivo,
-            texto="data prevista do recebimento",
-            sheet_name=sheet_name
+            texto="data da venda"
         )
 
         if header_row is None:
             print(f"Cabeçalho não encontrado: {arquivo}")
             continue
 
-        engine_excel = (
-            "openpyxl"
-            if caminho_arquivo.suffix.lower() in [".xlsx", ".xlsm"]
-            else "xlrd"
-        )
-
         df = pd.read_excel(
             caminho_arquivo,
             skiprows=header_row,
-            engine=engine_excel,
-            sheet_name=sheet_name
+            engine="openpyxl"
         )
 
         df.columns = (
@@ -288,20 +259,26 @@ for caminho_arquivo in arquivos_encontrados:
 
         df["marca"] = pasta
         df["arquivo_origem"] = arquivo
+        df["pv"] = extrair_pv_nome_arquivo(arquivo)
         df["data_atualizacao"] = data_carga
 
-        if "data prevista do recebimento" in df.columns:
-            df["data prevista do recebimento"] = pd.to_datetime(
-                df["data prevista do recebimento"],
+        if "hora da venda" in df.columns:
+            df["hora da venda"] = pd.to_datetime(
+                df["hora da venda"],
                 errors="coerce"
-            )
+            ).dt.time
 
         dfs.append(df)
 
-        print(f"✔ Processado: {pasta}\\{arquivo} | Linhas: {len(df)}")
+        print(
+            f"✔ Processado: {pasta}\\{arquivo} | "
+            f"PV: {df['pv'].iloc[0]} | "
+            f"Linhas: {len(df)}"
+        )
 
     except Exception as e:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
+
 
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
@@ -328,17 +305,19 @@ if dfs:
 
     df_final = df_final[colunas_validas]
 
-    substituir_periodo_no_dw(
-        df=df_final,
-        engine=engine,
-        schema=SCHEMA,
-        tabela=tabela,
-        padrao_periodo=PADRAO_PERIODO
-    )
+    if df_final.empty:
+        print("Após filtrar as colunas válidas, o DataFrame ficou vazio.")
+        print("Nenhum DELETE foi executado no DW.")
+    else:
+        substituir_vendas_no_dw(
+            df=df_final,
+            engine=engine,
+            schema=SCHEMA,
+            tabela=tabela
+        )
 
-    print(f"Período: {PERIODO_ARQUIVO}")
-    print(f"Arquivos processados: {len(dfs)}")
-    print(f"Linhas inseridas: {len(df_final)}")
+        print(f"Arquivos processados: {len(dfs)}")
+        print(f"Linhas inseridas: {len(df_final)}")
 
 else:
     df_final = pd.DataFrame()
