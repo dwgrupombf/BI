@@ -1,8 +1,8 @@
 #%%
 
 """
-1) Reprocessa todos os arquivos *_RECEBIDOS_*.xlsx
-2) Carrega na tabela datalake.rede_rpa_recebidos_ajustes
+1) Reprocessa todos os arquivos *_A_RECEBER_*.xlsx
+2) Carrega na tabela datalake.rede_rpa_a_receber
 
 Pasta: E:\RPA\RPA_Rede_2_0\downloads
 
@@ -37,61 +37,18 @@ PG_PASS = dw.get("auth", "pwd", fallback=None)
 SCHEMA = dw.get("auth", "schema", fallback="datalake")
 
 caminho_base = Path(r"E:\RPA\RPA_Rede_2_0\downloads")
-
-tabela = "rede_rpa_recebidos_ajustes"
-sheet_name = "ajustes"
+tabela = "rede_rpa_a_receber"
+sheet_name = "pagamentos futuros"
 
 engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
 
-
-def criar_tabela_ajustes_se_nao_existir(engine, schema: str, tabela: str):
-
-    ddl = f'''
-        CREATE TABLE IF NOT EXISTS "{schema}"."{tabela}" (
-            "data do ajuste" timestamp,
-            "data do lançamento" timestamp,
-            "id ajuste" text,
-            "tipo do ajuste" text,
-            "forma de compensação" text,
-            "motivo" text,
-            "valor total original do ajuste" numeric(18,3),
-            "valor cobrado nesta data" numeric(18,3),
-            "valor total já cobrado" numeric(18,3),
-            "valor ainda pendente" numeric(18,3),
-            "valor creditado nesta data" numeric(18,3),
-            "bandeira ajustada" text,
-            "resumo de vendas/número do lote ajustado" text,
-            "nome do estabelecimento de origem da cobrança" text,
-            "número do estabelecimento de origem da cobrança" text,
-            "nome do estabelecimento cobrado" text,
-            "número do estabelecimento cobrado" text,
-            "banco" text,
-            "agência" text,
-            "conta-corrente" text,
-            "marca" text,
-            "arquivo_origem" text,
-            "data_atualizacao" timestamp
-        );
-    '''
-
-    with engine.begin() as conn:
-        conn.execute(text(ddl))
-
-        conn.execute(text(f'''
-            CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
-            ON "{schema}"."{tabela}" ("arquivo_origem")
-        '''))
-
-    print(f'Tabela "{schema}"."{tabela}" verificada/criada com sucesso.')
-
-
 def encontrar_linha_cabecalho(
     caminho_arquivo: Path,
-    texto="data do ajuste",
-    sheet_name="ajustes",
+    texto="data prevista do recebimento",
+    sheet_name="pagamentos futuros",
     max_linhas=80
 ):
 
@@ -142,12 +99,12 @@ def encontrar_linha_cabecalho(
         return None
 
 
-def listar_arquivos_ajustes(caminho_base: Path):
+def listar_arquivos_a_receber(caminho_base: Path):
 
     padroes = [
-        "*_RECEBIDOS_*.xlsx",
-        "*_RECEBIDOS_*.xlsm",
-        "*_RECEBIDOS_*.xls"
+        "*_A_RECEBER_*.xlsx",
+        "*_A_RECEBER_*.xlsm",
+        "*_A_RECEBER_*.xls"
     ]
 
     arquivos = chain.from_iterable(
@@ -201,38 +158,7 @@ def preparar_buffer_copy(df: pd.DataFrame):
     return buffer
 
 
-def converter_numero_decimal(serie: pd.Series):
-
-    def tratar_valor(valor):
-
-        if pd.isna(valor):
-            return None
-
-        if isinstance(valor, (int, float)):
-            return valor
-
-        texto = str(valor).strip()
-
-        if texto in ["", "-", "nan", "None", "none", "NULL", "null"]:
-            return None
-
-        texto = (
-            texto
-            .replace("R$", "")
-            .replace(" ", "")
-            .strip()
-        )
-
-        if "," in texto:
-            texto = texto.replace(".", "")
-            texto = texto.replace(",", ".")
-
-        return pd.to_numeric(texto, errors="coerce")
-
-    return serie.apply(tratar_valor)
-
-
-def substituir_apenas_arquivos_ajustes_listados_no_dw(
+def substituir_apenas_arquivos_a_receber_listados_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
@@ -282,7 +208,7 @@ def substituir_apenas_arquivos_ajustes_listados_no_dw(
             linhas_deletadas = cursor.rowcount
 
             print(f"Arquivos encontrados/processados para substituir: {len(arquivos_para_substituir)}")
-            print(f"Linhas de AJUSTES apagadas no DW somente desses arquivos: {linhas_deletadas}")
+            print(f"Linhas de A_RECEBER apagadas no DW somente desses arquivos: {linhas_deletadas}")
 
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
@@ -303,7 +229,7 @@ def substituir_apenas_arquivos_ajustes_listados_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE seletivo + INSERT de AJUSTES concluídos com sucesso.")
+        print("DELETE seletivo + INSERT de A_RECEBER concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
@@ -313,23 +239,20 @@ def substituir_apenas_arquivos_ajustes_listados_no_dw(
     finally:
         raw_conn.close()
 
+with engine.begin() as conn:
+    conn.execute(text(f'''
+        CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
+        ON "{SCHEMA}"."{tabela}" ("arquivo_origem")
+    '''))
 
-criar_tabela_ajustes_se_nao_existir(
-    engine=engine,
-    schema=SCHEMA,
-    tabela=tabela
-)
-
-
-arquivos_encontrados = listar_arquivos_ajustes(
+arquivos_encontrados = listar_arquivos_a_receber(
     caminho_base=caminho_base
 )
 
-print(f"Arquivos RECEBIDOS encontrados na pasta: {len(arquivos_encontrados)}")
+print(f"Arquivos A_RECEBER encontrados na pasta: {len(arquivos_encontrados)}")
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
-
 
 dfs = []
 data_carga = datetime.now()
@@ -341,12 +264,12 @@ for caminho_arquivo in arquivos_encontrados:
     try:
         header_row = encontrar_linha_cabecalho(
             caminho_arquivo=caminho_arquivo,
-            texto="data do ajuste",
+            texto="data prevista do recebimento",
             sheet_name=sheet_name
         )
 
         if header_row is None:
-            print(f"Cabeçalho não encontrado na aba '{sheet_name}': {arquivo}")
+            print(f"Cabeçalho não encontrado: {arquivo}")
             continue
 
         engine_excel = (
@@ -372,45 +295,26 @@ for caminho_arquivo in arquivos_encontrados:
         df = df.dropna(how="all")
 
         if df.empty:
-            print(f"Aba '{sheet_name}' sem linhas válidas: {arquivo}")
+            print(f"Arquivo sem linhas válidas: {arquivo}")
             continue
 
         df["marca"] = pasta
         df["arquivo_origem"] = arquivo
         df["data_atualizacao"] = data_carga
 
-        colunas_data = [
-            "data do ajuste",
-            "data do lançamento"
-        ]
-
-        for coluna in colunas_data:
-            if coluna in df.columns:
-                df[coluna] = pd.to_datetime(
-                    df[coluna],
-                    errors="coerce",
-                    dayfirst=True
-                )
-
-        colunas_valor = [
-            "valor total original do ajuste",
-            "valor cobrado nesta data",
-            "valor total já cobrado",
-            "valor ainda pendente",
-            "valor creditado nesta data"
-        ]
-
-        for coluna in colunas_valor:
-            if coluna in df.columns:
-                df[coluna] = converter_numero_decimal(df[coluna])
+        if "data prevista do recebimento" in df.columns:
+            df["data prevista do recebimento"] = pd.to_datetime(
+                df["data prevista do recebimento"],
+                errors="coerce",
+                dayfirst=True
+            )
 
         dfs.append(df)
 
-        print(f"✔ Processado AJUSTES: {pasta}\\{arquivo} | Linhas: {len(df)}")
+        print(f"✔ Processado A_RECEBER: {pasta}\\{arquivo} | Linhas: {len(df)}")
 
     except Exception as e:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
-
 
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
@@ -441,7 +345,7 @@ if dfs:
         print("Após filtrar as colunas válidas, o DataFrame ficou vazio.")
         print("Nenhum DELETE ou INSERT foi executado no DW.")
     else:
-        substituir_apenas_arquivos_ajustes_listados_no_dw(
+        substituir_apenas_arquivos_a_receber_listados_no_dw(
             df=df_final,
             engine=engine,
             schema=SCHEMA,

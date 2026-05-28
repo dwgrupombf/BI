@@ -1,5 +1,13 @@
 #%%
 
+"""
+1) Reprocessa todos os arquivos *_RECEBIDOS_*.xlsx
+2) Carrega na tabela datalake.rede_rpa_recebidos
+
+Pasta: E:\RPA\RPA_Rede_2_0\downloads
+
+"""
+
 from sqlalchemy import create_engine, text
 import pandas as pd
 from pathlib import Path
@@ -36,6 +44,7 @@ engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
+
 
 def encontrar_linha_cabecalho(
     caminho_arquivo: Path,
@@ -104,10 +113,14 @@ def listar_arquivos_recebidos(caminho_base: Path):
         for padrao in padroes
     )
 
-    return sorted(arquivos)
+    return sorted(
+        arquivo for arquivo in arquivos
+        if arquivo.is_file()
+    )
 
 
 def obter_colunas_tabela(engine, schema: str, tabela: str):
+
     query = text("""
         SELECT column_name
         FROM information_schema.columns
@@ -130,6 +143,7 @@ def obter_colunas_tabela(engine, schema: str, tabela: str):
 
 
 def preparar_buffer_copy(df: pd.DataFrame):
+
     buffer = StringIO()
 
     df.to_csv(
@@ -145,7 +159,130 @@ def preparar_buffer_copy(df: pd.DataFrame):
     return buffer
 
 
-def substituir_recebidos_no_dw(
+def normalizar_colunas_data(df: pd.DataFrame, colunas_data: list[str], arquivo: str):
+
+    valores_sem_data = ["-", "", " ", "nan", "NaN", "None", "none"]
+
+    for coluna in colunas_data:
+        if coluna not in df.columns:
+            continue
+
+        serie_original = df[coluna]
+        serie_limpa = serie_original.replace(valores_sem_data, pd.NA)
+        serie_convertida = pd.to_datetime(
+            serie_limpa,
+            errors="coerce",
+            dayfirst=True
+        )
+
+        valores_invalidos = (
+            serie_limpa.notna()
+            & serie_convertida.isna()
+        )
+
+        if valores_invalidos.any():
+            qtd_invalidos = int(valores_invalidos.sum())
+            exemplos = (
+                serie_original[valores_invalidos]
+                .astype(str)
+                .drop_duplicates()
+                .head(5)
+                .tolist()
+            )
+
+            print(
+                f"Aviso: {arquivo} | coluna '{coluna}' | "
+                f"{qtd_invalidos} valor(es) invalido(s) convertido(s) para NULL: {exemplos}"
+            )
+
+        df[coluna] = serie_convertida
+
+    return df
+
+
+def normalizar_colunas_numericas(df: pd.DataFrame, colunas_numericas: list[str], arquivo: str):
+
+    valores_sem_numero = ["-", "", " ", "nan", "NaN", "None", "none"]
+
+    for coluna in colunas_numericas:
+        if coluna not in df.columns:
+            continue
+
+        serie_original = df[coluna]
+        serie_limpa = serie_original.replace(valores_sem_numero, pd.NA)
+        serie_convertida = pd.to_numeric(serie_limpa, errors="coerce")
+
+        valores_invalidos = (
+            serie_limpa.notna()
+            & serie_convertida.isna()
+        )
+
+        if valores_invalidos.any():
+            qtd_invalidos = int(valores_invalidos.sum())
+            exemplos = (
+                serie_original[valores_invalidos]
+                .astype(str)
+                .drop_duplicates()
+                .head(5)
+                .tolist()
+            )
+
+            print(
+                f"Aviso: {arquivo} | coluna '{coluna}' | "
+                f"{qtd_invalidos} valor(es) invalido(s) convertido(s) para NULL: {exemplos}"
+            )
+
+        df[coluna] = serie_convertida
+
+    return df
+
+
+def normalizar_colunas_inteiras(df: pd.DataFrame, colunas_inteiras: list[str], arquivo: str):
+
+    valores_sem_numero = ["-", "", " ", "nan", "NaN", "None", "none"]
+
+    for coluna in colunas_inteiras:
+        if coluna not in df.columns:
+            continue
+
+        serie_original = df[coluna]
+        serie_limpa = serie_original.replace(valores_sem_numero, pd.NA)
+        serie_numerica = pd.to_numeric(serie_limpa, errors="coerce")
+
+        valores_invalidos_parse = (
+            serie_limpa.notna()
+            & serie_numerica.isna()
+        )
+
+        valores_nao_inteiros = (
+            serie_numerica.notna()
+            & (serie_numerica % 1 != 0)
+        )
+
+        valores_invalidos = valores_invalidos_parse | valores_nao_inteiros
+
+        if valores_invalidos.any():
+            qtd_invalidos = int(valores_invalidos.sum())
+            exemplos = (
+                serie_original[valores_invalidos]
+                .astype(str)
+                .drop_duplicates()
+                .head(5)
+                .tolist()
+            )
+
+            print(
+                f"Aviso: {arquivo} | coluna '{coluna}' | "
+                f"{qtd_invalidos} valor(es) invalido(s) para bigint convertido(s) para NULL: {exemplos}"
+            )
+
+        serie_numerica[valores_invalidos] = pd.NA
+        df[coluna] = serie_numerica.astype("Int64")
+
+    return df
+
+
+def substituir_apenas_arquivos_listados_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
@@ -154,6 +291,19 @@ def substituir_recebidos_no_dw(
 
     if df.empty:
         print("DataFrame vazio. Nenhuma exclusão ou carga será feita.")
+        return
+
+    arquivos_para_substituir = (
+        df["arquivo_origem"]
+        .dropna()
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+
+    if not arquivos_para_substituir:
+        print("Nenhum arquivo_origem válido encontrado no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
         return
 
     buffer = preparar_buffer_copy(df)
@@ -166,18 +316,18 @@ def substituir_recebidos_no_dw(
 
             delete_sql = sql.SQL("""
                 DELETE FROM {}.{}
-                WHERE "arquivo_origem" IS NOT NULL
-                  AND POSITION('_RECEBIDOS_' IN "arquivo_origem") > 0
+                WHERE "arquivo_origem" = ANY(%s)
             """).format(
                 sql.Identifier(schema),
                 sql.Identifier(tabela)
             )
 
-            cursor.execute(delete_sql)
+            cursor.execute(delete_sql, (arquivos_para_substituir,))
 
             linhas_deletadas = cursor.rowcount
 
-            print(f"Linhas RECEBIDOS apagadas no DW: {linhas_deletadas}")
+            print(f"Arquivos encontrados/processados para substituir: {len(arquivos_para_substituir)}")
+            print(f"Linhas apagadas no DW somente desses arquivos: {linhas_deletadas}")
 
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
@@ -198,16 +348,15 @@ def substituir_recebidos_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE + INSERT de todos os RECEBIDOS concluídos com sucesso.")
+        print("DELETE seletivo + INSERT concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
-        print("Erro na carga. O DELETE foi desfeito.")
+        print("Erro na carga. O DELETE e o INSERT foram desfeitos.")
         raise e
 
     finally:
         raw_conn.close()
-
 
 
 with engine.begin() as conn:
@@ -217,16 +366,14 @@ with engine.begin() as conn:
     '''))
 
 
-
 arquivos_encontrados = listar_arquivos_recebidos(
     caminho_base=caminho_base
 )
 
-print(f"Arquivos RECEBIDOS encontrados: {len(arquivos_encontrados)}")
+print(f"Arquivos RECEBIDOS encontrados na pasta: {len(arquivos_encontrados)}")
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
-
 
 
 dfs = []
@@ -277,11 +424,33 @@ for caminho_arquivo in arquivos_encontrados:
         df["arquivo_origem"] = arquivo
         df["data_atualizacao"] = data_carga
 
-        if "data do recebimento" in df.columns:
-            df["data do recebimento"] = pd.to_datetime(
-                df["data do recebimento"],
-                errors="coerce"
-            )
+        df = normalizar_colunas_data(
+            df=df,
+            colunas_data=[
+                "data do recebimento",
+                "data original da venda",
+                "data original de vencimento",
+            ],
+            arquivo=arquivo
+        )
+        df = normalizar_colunas_numericas(
+            df=df,
+            colunas_numericas=[
+                "taxa mdr",
+            ],
+            arquivo=arquivo
+        )
+        df = normalizar_colunas_inteiras(
+            df=df,
+            colunas_inteiras=[
+                "nsu/cv",
+                "resumo de vendas/número do lote",
+                "estabelecimento",
+                "número de parcelas",
+                "parcela",
+            ],
+            arquivo=arquivo
+        )
 
         dfs.append(df)
 
@@ -318,22 +487,29 @@ if dfs:
 
     if df_final.empty:
         print("Após filtrar as colunas válidas, o DataFrame ficou vazio.")
-        print("Nenhum DELETE foi executado no DW.")
+        print("Nenhum DELETE ou INSERT foi executado no DW.")
     else:
-        substituir_recebidos_no_dw(
+        substituir_apenas_arquivos_listados_no_dw(
             df=df_final,
             engine=engine,
             schema=SCHEMA,
             tabela=tabela
         )
 
-        print(f"Arquivos processados: {len(dfs)}")
+        arquivos_processados = (
+            df_final["arquivo_origem"]
+            .dropna()
+            .astype(str)
+            .nunique()
+        )
+
+        print(f"Arquivos processados/substituídos: {arquivos_processados}")
         print(f"Linhas inseridas: {len(df_final)}")
 
 else:
     df_final = pd.DataFrame()
     print("Nenhum arquivo válido encontrado para carregar.")
-    print("Nenhum DELETE foi executado no DW.")
+    print("Nenhum DELETE ou INSERT foi executado no DW.")
 
 
 # %%

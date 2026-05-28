@@ -1,5 +1,13 @@
 #%%
 
+"""
+1) Reprocessa todos os arquivos *_RECEBIDOS_*.xlsx que contenham PERIODO_ARQUIVO na nomenclatura
+2) Carrega na tabela datalake.rede_rpa_recebidos_ajustes
+
+Pasta: E:\RPA\RPA_Rede_2_0\downloads
+
+"""
+
 from sqlalchemy import create_engine, text
 import pandas as pd
 from pathlib import Path
@@ -229,16 +237,33 @@ def converter_numero_decimal(serie: pd.Series):
     return serie.apply(tratar_valor)
 
 
-def substituir_periodo_ajustes_no_dw(
+def substituir_apenas_arquivos_ajustes_periodo_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
-    tabela: str,
-    padrao_periodo: str
+    tabela: str
 ):
 
     if df.empty:
         print("DataFrame vazio. Nenhuma exclusão ou carga será feita.")
+        return
+
+    if "arquivo_origem" not in df.columns:
+        print("Coluna arquivo_origem não encontrada no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
+        return
+
+    arquivos_para_substituir = (
+        df["arquivo_origem"]
+        .dropna()
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+
+    if not arquivos_para_substituir:
+        print("Nenhum arquivo_origem válido encontrado no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
         return
 
     buffer = preparar_buffer_copy(df)
@@ -251,25 +276,18 @@ def substituir_periodo_ajustes_no_dw(
 
             delete_sql = sql.SQL("""
                 DELETE FROM {}.{}
-                WHERE "arquivo_origem" IS NOT NULL
-                  AND "arquivo_origem" LIKE %s
-                  AND "arquivo_origem" LIKE %s
+                WHERE "arquivo_origem" = ANY(%s)
             """).format(
                 sql.Identifier(schema),
                 sql.Identifier(tabela)
             )
 
-            cursor.execute(
-                delete_sql,
-                [
-                    f"{padrao_periodo}%",
-                    "%_RECEBIDOS_%"
-                ]
-            )
+            cursor.execute(delete_sql, (arquivos_para_substituir,))
 
             linhas_deletadas = cursor.rowcount
 
-            print(f"Linhas de AJUSTES apagadas no DW para {padrao_periodo}%: {linhas_deletadas}")
+            print(f"Arquivos do período encontrados/processados para substituir: {len(arquivos_para_substituir)}")
+            print(f"Linhas de AJUSTES apagadas no DW somente desses arquivos: {linhas_deletadas}")
 
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
@@ -290,11 +308,11 @@ def substituir_periodo_ajustes_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE + INSERT de AJUSTES concluídos com sucesso.")
+        print("DELETE seletivo + INSERT de AJUSTES concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
-        print("Erro na carga. O DELETE foi desfeito.")
+        print("Erro na carga. O DELETE e o INSERT foram desfeitos.")
         raise e
 
     finally:
@@ -318,6 +336,7 @@ print(f"Arquivos RECEBIDOS encontrados para o período: {len(arquivos_encontrado
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
+
 
 dfs = []
 data_carga = datetime.now()
@@ -427,24 +446,30 @@ if dfs:
 
     if df_final.empty:
         print("Após filtrar as colunas válidas, o DataFrame ficou vazio.")
-        print("Nenhum DELETE foi executado no DW.")
+        print("Nenhum DELETE ou INSERT foi executado no DW.")
     else:
-        substituir_periodo_ajustes_no_dw(
+        substituir_apenas_arquivos_ajustes_periodo_no_dw(
             df=df_final,
             engine=engine,
             schema=SCHEMA,
-            tabela=tabela,
-            padrao_periodo=PADRAO_PERIODO
+            tabela=tabela
+        )
+
+        arquivos_processados = (
+            df_final["arquivo_origem"]
+            .dropna()
+            .astype(str)
+            .nunique()
         )
 
         print(f"Período: {PERIODO_ARQUIVO}")
-        print(f"Arquivos processados: {len(dfs)}")
+        print(f"Arquivos processados/substituídos: {arquivos_processados}")
         print(f"Linhas inseridas: {len(df_final)}")
 
 else:
     df_final = pd.DataFrame()
     print(f"Nenhum arquivo válido encontrado para o período {PERIODO_ARQUIVO}.")
-    print("Nenhum DELETE foi executado no DW.")
+    print("Nenhum DELETE ou INSERT foi executado no DW.")
 
 
 # %%

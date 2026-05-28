@@ -1,5 +1,13 @@
 #%%
 
+"""
+1) Reprocessa todos os arquivos *_RECEBIDOS_*.xlsx que contenham PERIODO_ARQUIVO na nomenclatura
+2) Carrega na tabela datalake.rede_rpa_recebidos
+
+Pasta: E:\RPA\RPA_Rede_2_0\downloads
+
+"""
+
 from sqlalchemy import create_engine, text
 import pandas as pd
 from pathlib import Path
@@ -15,11 +23,6 @@ warnings.filterwarnings(
     "ignore",
     message="Workbook contains no default style, apply openpyxl's default"
 )
-
-
-# ============================================================
-# CONFIGURAÇÕES
-# ============================================================
 
 DW_CONFIG_PATH = Path(r"E:\BI\config\config_datalake.ini")
 
@@ -37,11 +40,9 @@ caminho_base = Path(r"E:\RPA\RPA_Rede_2_0\downloads")
 tabela = "rede_rpa_recebidos"
 sheet_name = "pagamentos"
 
-# Use automático pelo mês atual:
-# PERIODO_ARQUIVO = datetime.now().strftime("%m_%Y")
+PERIODO_ARQUIVO = datetime.now().strftime("%m_%Y")
 
-# Ou force manualmente o período desejado:
-PERIODO_ARQUIVO = "04_2026"
+# PERIODO_ARQUIVO = "04_2026"
 
 PADRAO_PERIODO = f"{PERIODO_ARQUIVO}_"
 
@@ -49,11 +50,6 @@ engine = create_engine(
     f"postgresql+psycopg2://{PG_USER}:{PG_PASS}@{PG_HOST}:{PG_PORT}/{PG_DB}",
     pool_pre_ping=True
 )
-
-
-# ============================================================
-# FUNÇÕES
-# ============================================================
 
 def encontrar_linha_cabecalho(
     caminho_arquivo: Path,
@@ -168,16 +164,33 @@ def preparar_buffer_copy(df: pd.DataFrame):
     return buffer
 
 
-def substituir_periodo_no_dw(
+def substituir_apenas_arquivos_recebidos_periodo_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
-    tabela: str,
-    padrao_periodo: str
+    tabela: str
 ):
 
     if df.empty:
-        print("DataFrame vazio. Nenhuma carga será feita.")
+        print("DataFrame vazio. Nenhuma exclusão ou carga será feita.")
+        return
+
+    if "arquivo_origem" not in df.columns:
+        print("Coluna arquivo_origem não encontrada no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
+        return
+
+    arquivos_para_substituir = (
+        df["arquivo_origem"]
+        .dropna()
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+
+    if not arquivos_para_substituir:
+        print("Nenhum arquivo_origem válido encontrado no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
         return
 
     buffer = preparar_buffer_copy(df)
@@ -188,34 +201,21 @@ def substituir_periodo_no_dw(
     try:
         with raw_conn.cursor() as cursor:
 
-            # Apaga o período no DW, se existir.
-            # Se não existir, rowcount será 0 e o INSERT continua normalmente.
             delete_sql = sql.SQL("""
                 DELETE FROM {}.{}
-                WHERE "arquivo_origem" LIKE %s
-                  AND "arquivo_origem" LIKE %s
+                WHERE "arquivo_origem" = ANY(%s)
             """).format(
                 sql.Identifier(schema),
                 sql.Identifier(tabela)
             )
 
-            cursor.execute(
-                delete_sql,
-                [
-                    f"{padrao_periodo}%",
-                    "%_RECEBIDOS_%"
-                ]
-            )
+            cursor.execute(delete_sql, (arquivos_para_substituir,))
 
             linhas_deletadas = cursor.rowcount
 
-            print(f"Linhas apagadas no DW para {padrao_periodo}%: {linhas_deletadas}")
+            print(f"Arquivos do período encontrados/processados para substituir: {len(arquivos_para_substituir)}")
+            print(f"Linhas apagadas no DW somente desses arquivos: {linhas_deletadas}")
 
-            if linhas_deletadas == 0:
-                print("Nenhum registro anterior encontrado no DW para esse período.")
-                print("A carga será feita mesmo assim.")
-
-            # Insere os dados processados.
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
                 FROM STDIN
@@ -235,7 +235,7 @@ def substituir_periodo_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE + INSERT concluídos com sucesso.")
+        print("DELETE seletivo + INSERT concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
@@ -245,21 +245,11 @@ def substituir_periodo_no_dw(
     finally:
         raw_conn.close()
 
-
-# ============================================================
-# CRIA ÍNDICE PARA MELHORAR PERFORMANCE DO DELETE
-# ============================================================
-
 with engine.begin() as conn:
     conn.execute(text(f'''
         CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
         ON "{SCHEMA}"."{tabela}" ("arquivo_origem")
     '''))
-
-
-# ============================================================
-# LISTA ARQUIVOS DO PERÍODO
-# ============================================================
 
 arquivos_encontrados = listar_arquivos_recebidos_periodo(
     caminho_base=caminho_base,
@@ -271,11 +261,6 @@ print(f"Arquivos RECEBIDOS encontrados para o período: {len(arquivos_encontrado
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
-
-
-# ============================================================
-# PROCESSA OS ARQUIVOS
-# ============================================================
 
 dfs = []
 data_carga = datetime.now()
@@ -340,10 +325,6 @@ for caminho_arquivo in arquivos_encontrados:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
 
 
-# ============================================================
-# CONSOLIDA E CARREGA NO DW
-# ============================================================
-
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
 
@@ -375,16 +356,22 @@ if dfs:
     else:
         print(f"Linhas preparadas para inserir no DW: {len(df_final)}")
 
-        substituir_periodo_no_dw(
+        substituir_apenas_arquivos_recebidos_periodo_no_dw(
             df=df_final,
             engine=engine,
             schema=SCHEMA,
-            tabela=tabela,
-            padrao_periodo=PADRAO_PERIODO
+            tabela=tabela
+        )
+
+        arquivos_processados = (
+            df_final["arquivo_origem"]
+            .dropna()
+            .astype(str)
+            .nunique()
         )
 
         print(f"Período: {PERIODO_ARQUIVO}")
-        print(f"Arquivos processados: {len(dfs)}")
+        print(f"Arquivos processados/substituídos: {arquivos_processados}")
         print(f"Linhas inseridas: {len(df_final)}")
 
 else:

@@ -1,5 +1,13 @@
 #%%
 
+"""
+1) Reprocessa os arquivos *Rede_Rel_Vendas*.xlsx que contenham PERIODO_ARQUIVO na nomenclatura
+2) Carrega na tabela datalake.rede_rpa_vendas
+
+Pasta: E:\RPA\RPA_Rede_2_0\downloads
+
+"""
+
 from sqlalchemy import create_engine, text
 from itertools import chain
 import pandas as pd
@@ -42,13 +50,18 @@ engine = create_engine(
     pool_pre_ping=True
 )
 
+
 def extrair_pv_nome_arquivo(nome_arquivo: str):
 
     match = re.search(r"^\d{2}_\d{4}_([0-9]+)_", nome_arquivo)
     return match.group(1) if match else None
 
 
-def encontrar_linha_cabecalho(caminho_arquivo: Path, texto="data da venda", max_linhas=80):
+def encontrar_linha_cabecalho(
+    caminho_arquivo: Path,
+    texto="data da venda",
+    max_linhas=80
+):
 
     wb = load_workbook(
         filename=caminho_arquivo,
@@ -89,10 +102,14 @@ def listar_arquivos_vendas_periodo(caminho_base: Path, padrao_periodo: str):
         for padrao in padroes
     )
 
-    return sorted(arquivos)
+    return sorted(
+        arquivo for arquivo in arquivos
+        if arquivo.is_file()
+    )
 
 
 def obter_colunas_tabela(engine, schema: str, tabela: str):
+
     query = text("""
         SELECT column_name
         FROM information_schema.columns
@@ -115,6 +132,7 @@ def obter_colunas_tabela(engine, schema: str, tabela: str):
 
 
 def preparar_buffer_copy(df: pd.DataFrame):
+
     buffer = StringIO()
 
     df.to_csv(
@@ -130,16 +148,33 @@ def preparar_buffer_copy(df: pd.DataFrame):
     return buffer
 
 
-def substituir_periodo_no_dw(
+def substituir_apenas_arquivos_vendas_periodo_no_dw(
     df: pd.DataFrame,
     engine,
     schema: str,
-    tabela: str,
-    padrao_periodo: str
+    tabela: str
 ):
 
     if df.empty:
         print("DataFrame vazio. Nenhuma exclusão ou carga será feita.")
+        return
+
+    if "arquivo_origem" not in df.columns:
+        print("Coluna arquivo_origem não encontrada no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
+        return
+
+    arquivos_para_substituir = (
+        df["arquivo_origem"]
+        .dropna()
+        .astype(str)
+        .drop_duplicates()
+        .tolist()
+    )
+
+    if not arquivos_para_substituir:
+        print("Nenhum arquivo_origem válido encontrado no DataFrame.")
+        print("Nenhuma exclusão ou carga será feita.")
         return
 
     buffer = preparar_buffer_copy(df)
@@ -152,16 +187,18 @@ def substituir_periodo_no_dw(
 
             delete_sql = sql.SQL("""
                 DELETE FROM {}.{}
-                WHERE "arquivo_origem" LIKE %s
+                WHERE "arquivo_origem" = ANY(%s)
             """).format(
                 sql.Identifier(schema),
                 sql.Identifier(tabela)
             )
 
-            cursor.execute(delete_sql, [f"{padrao_periodo}%"])
+            cursor.execute(delete_sql, (arquivos_para_substituir,))
+
             linhas_deletadas = cursor.rowcount
 
-            print(f"Linhas apagadas no DW para {padrao_periodo}%: {linhas_deletadas}")
+            print(f"Arquivos do período processados para substituir: {len(arquivos_para_substituir)}")
+            print(f"Linhas apagadas no DW somente desses arquivos: {linhas_deletadas}")
 
             copy_sql = sql.SQL("""
                 COPY {}.{} ({})
@@ -182,21 +219,23 @@ def substituir_periodo_no_dw(
 
         raw_conn.commit()
 
-        print("DELETE + INSERT concluídos com sucesso.")
+        print("DELETE seletivo + INSERT concluídos com sucesso.")
 
     except Exception as e:
         raw_conn.rollback()
-        print("Erro na carga. O DELETE foi desfeito.")
+        print("Erro na carga. O DELETE e o INSERT foram desfeitos.")
         raise e
 
     finally:
         raw_conn.close()
+
 
 with engine.begin() as conn:
     conn.execute(text(f'''
         CREATE INDEX IF NOT EXISTS idx_{tabela}_arquivo_origem
         ON "{SCHEMA}"."{tabela}" ("arquivo_origem")
     '''))
+
 
 arquivos_encontrados = listar_arquivos_vendas_periodo(
     caminho_base=caminho_base,
@@ -208,6 +247,7 @@ print(f"Arquivos encontrados para o período: {len(arquivos_encontrados)}")
 
 for arquivo in arquivos_encontrados:
     print(f" - {arquivo.parent.name}\\{arquivo.name}")
+
 
 dfs = []
 data_carga = datetime.now()
@@ -267,6 +307,7 @@ for caminho_arquivo in arquivos_encontrados:
     except Exception as e:
         print(f"Erro ao processar {caminho_arquivo}: {e}")
 
+
 if dfs:
     df_final = pd.concat(dfs, ignore_index=True)
 
@@ -292,22 +333,32 @@ if dfs:
 
     df_final = df_final[colunas_validas]
 
-    substituir_periodo_no_dw(
-        df=df_final,
-        engine=engine,
-        schema=SCHEMA,
-        tabela=tabela,
-        padrao_periodo=PADRAO_PERIODO
-    )
+    if df_final.empty:
+        print("Após filtrar as colunas válidas, o DataFrame ficou vazio.")
+        print("Nenhum DELETE ou INSERT foi executado no DW.")
+    else:
+        substituir_apenas_arquivos_vendas_periodo_no_dw(
+            df=df_final,
+            engine=engine,
+            schema=SCHEMA,
+            tabela=tabela
+        )
 
-    print(f"Período: {PERIODO_ARQUIVO}")
-    print(f"Arquivos processados: {len(dfs)}")
-    print(f"Linhas inseridas: {len(df_final)}")
+        arquivos_processados = (
+            df_final["arquivo_origem"]
+            .dropna()
+            .astype(str)
+            .nunique()
+        )
+
+        print(f"Período: {PERIODO_ARQUIVO}")
+        print(f"Arquivos processados/substituídos: {arquivos_processados}")
+        print(f"Linhas inseridas: {len(df_final)}")
 
 else:
     df_final = pd.DataFrame()
     print("Nenhum arquivo válido encontrado para carregar.")
-    print("Nenhum DELETE foi executado no DW.")
+    print("Nenhum DELETE ou INSERT foi executado no DW.")
 
 
 # %%
